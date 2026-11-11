@@ -18,7 +18,7 @@ struct DisplayGroupsCard: View {
                        + "moving the group. Grouped displays are left out of Adaptive Display.") {
             if model.settings.displayGroups.isEmpty {
                 Text("Group displays to move their brightness together.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .appBodyFont().foregroundStyle(.secondary)
                     .padding(.horizontal, 11).padding(.vertical, 10)
             } else {
                 ForEach(model.settings.displayGroups) { group in
@@ -45,8 +45,9 @@ private struct DisplayGroupSection: View {
                         .onSubmit { commitName() }
                     Button(role: .destructive) {
                         model.deleteDisplayGroup(group)
-                    } label: { Image(systemName: "trash") }
+                    } label: { Image(systemName: "xmark.circle") }
                         .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove group \(group.name)")
                 }
             }
             ODDivider()
@@ -102,7 +103,7 @@ private struct DisplayGroupMemberRow: View {
             HStack(spacing: ODSpacing.sm) {
                 if isMember, group.syncBrightness {
                     Text(offsetLabel)
-                        .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                        .appBodyFont().monospacedDigit().foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .trailing)
                     Slider(value: offsetBinding, in: offsetRange).frame(width: 110)
                 }

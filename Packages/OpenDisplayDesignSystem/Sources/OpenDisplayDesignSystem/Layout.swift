@@ -52,10 +52,10 @@ public struct ODSectionLabel<Trailing: View>: View {
 
     public var body: some View {
         HStack(spacing: 4) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+            Text(title)
+                .font(.body.weight(.semibold))
                 .tracking(0.3)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             trailing
         }
@@ -103,7 +103,7 @@ public struct ODCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 Text(title)
-                    .font(.system(size: 11))
+
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
@@ -115,7 +115,7 @@ public struct ODCard<Content: View>: View {
                 .overlay(RoundedRectangle(cornerRadius: ODRadius.card).strokeBorder(ODColor.separator, lineWidth: 0.5))
             if let footnote {
                 Text(footnote)
-                    .font(.system(size: 11))
+
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 10)
@@ -152,16 +152,16 @@ public struct ODRow<Leading: View, Trailing: View>: View {
         let row = HStack(spacing: 9) {
             leading
             VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 13)).foregroundStyle(.primary).lineLimit(1)
+                Text(label).foregroundStyle(.primary).lineLimit(1)
                 if let secondary {
-                    Text(secondary).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(secondary).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 6)
             trailing
         }
         .padding(.horizontal, 11)
-        .frame(minHeight: 38)
+        .frame(minHeight: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background, in: RoundedRectangle(cornerRadius: ODRadius.card))
         .contentShape(Rectangle())
@@ -179,6 +179,31 @@ public struct ODRow<Leading: View, Trailing: View>: View {
         if selected { return ODColor.accentTint }
         if action != nil && hovering { return ODColor.rowHover }
         return .clear
+    }
+}
+
+/// A settings form row with its label aligned left and its control aligned right.
+public struct ODSettingsRow<Control: View>: View {
+    private let label: String
+    private let control: Control
+
+    public init(_ label: String, @ViewBuilder control: () -> Control) {
+        self.label = label
+        self.control = control()
+    }
+
+    public var body: some View {
+        HStack(spacing: 20) {
+            Text(label)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            control
+                .frame(width: 280, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 46)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -207,9 +232,9 @@ public extension ODRow where Leading == EmptyView, Trailing == EmptyView {
         ODSectionLabel("Displays") { ODBadge("3") }
         HStack { ODGlyphTile("display", tone: .accent); ODGlyphTile("laptopcomputer"); ODGlyphTile("display.trianglebadge.exclamationmark", tone: .orange) }
         ODCard(title: "Resolution", footnote: "Scaled resolutions use HiDPI rendering.") {
-            ODRow("Resolution") { Text("2560 × 1440").font(.system(size: 11)).foregroundStyle(.secondary) }
+            ODRow("Resolution") { Text("2560 × 1440").foregroundStyle(.secondary) }
             ODDivider()
-            ODRow("Refresh rate") { Text("60 Hz").font(.system(size: 11)).foregroundStyle(.secondary) }
+            ODRow("Refresh rate") { Text("60 Hz").foregroundStyle(.secondary) }
         }
         ODRow("Studio Display", secondary: "5120 × 2880 · 60 Hz", action: {}) {
             ODGlyphTile("display", tone: .accent)

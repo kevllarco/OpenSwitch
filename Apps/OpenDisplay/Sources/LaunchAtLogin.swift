@@ -16,12 +16,12 @@ struct LaunchAtLoginToggle: View {
         Toggle(isOn: Binding(get: { Self.isOn(status) }, set: { setEnabled($0) })) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Launch at login")
-                Text(caption).font(.caption).foregroundStyle(.secondary)
+                Text(caption).appBodyFont().foregroundStyle(.secondary)
                 if status == .requiresApproval {
                     Button("Open Login Items Settings\u{2026}") {
                         SMAppService.openSystemSettingsLoginItems()
                     }
-                    .buttonStyle(.link).font(.caption)
+                    .buttonStyle(.link).appBodyFont()
                 }
             }
         }
@@ -39,11 +39,10 @@ struct LaunchAtLoginToggle: View {
     private var caption: String {
         if let failure { return "Couldn\u{2019}t change the login item: \(failure)" }
         if status == .requiresApproval {
-            return "macOS is holding this until you allow OpenDisplay under System Settings \u{2192} "
+            return "macOS is holding this until you allow OpenSwitch under System Settings \u{2192} "
                 + "General \u{2192} Login Items."
         }
-        return "Starts OpenDisplay when you log in, so its display rules and brightness sync are "
-            + "there without you opening it."
+        return "Starts OpenSwitch when you log in."
     }
 
     private func setEnabled(_ enabled: Bool) {

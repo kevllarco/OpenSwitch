@@ -68,8 +68,8 @@ public actor ExternalDisplayDDC {
     public private(set) var consecutiveIOFailures = 0
 
     /// Every I2C call goes through these two so the failure run is counted in exactly one place.
-    private func i2cWrite(_ bytes: UnsafePointer<UInt8>, _ length: UInt32) -> Bool {
-        noteI2C(writeFn(service, Self.i2cChip, Self.i2cSource, bytes, length) == 0)
+    private func i2cWrite(_ bytes: UnsafePointer<UInt8>, _ length: UInt32, sourceAddress: UInt32 = 0x51) -> Bool {
+        noteI2C(writeFn(service, Self.i2cChip, sourceAddress, bytes, length) == 0)
     }
 
     private func i2cRead(_ bytes: UnsafeMutablePointer<UInt8>, _ length: UInt32) -> Bool {
@@ -242,16 +242,14 @@ public actor ExternalDisplayDDC {
 
     /// Raw-VCP variant of `write(_:_:)` — see `read(vcp:)`. Returns as soon as the I2C call does;
     /// the mandatory settle time before the *next* transaction is enforced by pacing, not by
-    /// sleeping here, so a single slider tick doesn't pay 50ms of dead latency.
+    /// sleeping here, so a single slider tick doesn't pay 50ms of dead latency. `sourceAddress`
+    /// applies only to this transaction (LG alternate input commands use 0x50); reads stay on 0x51.
     @discardableResult
-    public func write(vcp code: UInt8, _ value: Int) async -> Bool {
-        let high = UInt8((value >> 8) & 0xff)
-        let low = UInt8(value & 0xff)
-        let checksum = UInt8(0x6e ^ Int(Self.i2cSource) ^ 0x84 ^ 0x03) ^ code ^ high ^ low
-        var packet: [UInt8] = [0x84, 0x03, code, high, low, checksum]
+    public func write(vcp code: UInt8, _ value: Int, sourceAddress: UInt8 = 0x51) async -> Bool {
+        var packet = DDCWritePacket.bytes(vcp: code, value: value, sourceAddress: sourceAddress)
         await lockBus()
         await paceBus()
-        let ok = i2cWrite(&packet, 6)
+        let ok = i2cWrite(&packet, 6, sourceAddress: UInt32(sourceAddress))
         markTransaction()
         unlockBus()
         return ok

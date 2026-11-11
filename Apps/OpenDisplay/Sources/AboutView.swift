@@ -25,9 +25,7 @@ struct AboutView: View {
 
     /// The project links AboutView offers, reused verbatim by the Settings → About card.
     static let projectLinks: [AboutLink] = [
-        AboutLink(title: "Website", systemImage: "globe", url: URL(string: repo)!),
-        AboutLink(title: "Release notes", systemImage: "doc.text", url: URL(string: "\(repo)/releases")!),
-        AboutLink(title: "Report an issue", systemImage: "ladybug", url: URL(string: "\(repo)/issues/new")!),
+        AboutLink(title: "Original OpenDisplay project", systemImage: "globe", url: URL(string: repo)!),
         AboutLink(title: "License (GPL-3.0)", systemImage: "checkmark.seal",
                   url: URL(string: "\(repo)/blob/main/LICENSE")!),
     ]
@@ -46,19 +44,24 @@ struct AboutView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable().frame(width: 64, height: 64)
                 .accessibilityHidden(true)
-            Text("OpenDisplay")
+            Text("OpenSwitch")
                 .font(.title2.weight(.semibold))
-            Text("Free, open-source display control for macOS.")
-                .font(.callout).foregroundStyle(.secondary)
+            Text("Switch computers and your connected devices.")
+                .appBodyFont().foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Version \(Self.version) (build \(Self.build))")
-                .font(.callout.monospacedDigit())
+            Text("Development build \(Self.build)")
+                .font(.body.monospacedDigit())
                 .textSelection(.enabled)
-                .accessibilityLabel("Version \(Self.version), build \(Self.build)")
+                .accessibilityLabel("Development build \(Self.build)")
                 .padding(.top, 2)
-            UpdateCheckStatusView()
+            if SoftwareUpdater.updatesEnabled {
+                UpdateCheckStatusView()
+            } else {
+                Text("Updates are not configured for this build.")
+                    .appBodyFont().foregroundStyle(.secondary)
+            }
 
             Divider().padding(.vertical, ODSpacing.xs)
 
@@ -70,19 +73,21 @@ struct AboutView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, ODSpacing.lg)
 
-            Text("© 2026 OpenDisplay contributors")
-                .font(.footnote).foregroundStyle(.tertiary)
+            Text("Based on OpenDisplay · © 2026 OpenDisplay contributors")
+                .appBodyFont().foregroundStyle(.secondary)
                 .padding(.top, ODSpacing.xs)
         }
         .padding(.vertical, ODSpacing.xl)
         .padding(.horizontal, ODSpacing.xl)
-        .frame(width: 300)
+        .frame(width: model.settings.openSwitchTextSize.aboutWindowWidth)
+        .appBodyFont()
+        .appTextSize(model.settings.openSwitchTextSize)
     }
 
     private func aboutLink(_ link: AboutLink) -> some View {
         Link(destination: link.url) {
             Label {
-                Text(link.title).font(.callout)
+                Text(link.title).appBodyFont()
             } icon: {
                 Image(systemName: link.systemImage).frame(width: 18)
             }
@@ -104,7 +109,7 @@ struct UpdateCheckStatusView: View {
         if presentation.showsProgress {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text(presentation.combinedTitle).font(.callout).foregroundStyle(.secondary)
+                Text(presentation.combinedTitle).appBodyFont().foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
         } else {
@@ -113,7 +118,8 @@ struct UpdateCheckStatusView: View {
             } label: {
                 Label(presentation.combinedTitle, systemImage: presentation.systemImage)
             }
-            .controlSize(.small)
+            .controlSize(.regular)
+            .appBodyFont()
             .accessibilityHint("Checks for a new version, then downloads and installs it")
         }
     }

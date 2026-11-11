@@ -86,6 +86,11 @@ enum FeatureFlags {
 /// (true logical disconnect, full build only) and falls back to `CoreGraphicsProvider`'s public,
 /// reversible mirroring approach — selected by `RoutedLifecycleProvider`. In the public-API-only
 /// build the experimental module is absent and the public provider is used directly.
+private struct SharedSetupRemovalRecord: Codable {
+    let setupID: UUID
+    let revision: UInt64
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var displays: [DisplayObservation] = []
@@ -159,10 +164,7 @@ final class AppModel: ObservableObject {
 
     /// Common DDC/CI input-source codes (VCP 0x60). Monitors mostly follow these; the menu shows the
     /// live code too, so a non-standard panel is still legible.
-    static let standardInputs: [(name: String, code: Int)] = [
-        ("HDMI 1", 0x11), ("HDMI 2", 0x12), ("DisplayPort 1", 0x0F), ("DisplayPort 2", 0x10),
-        ("USB-C", 0x1B), ("DVI", 0x03), ("VGA", 0x01),
-    ]
+    static let standardInputs = DDCInputTransport.standard.inputs
 
     /// Human label for a DDC input code, or "Code N" if non-standard.
     func inputName(_ code: Int) -> String {
@@ -270,6 +272,20 @@ final class AppModel: ObservableObject {
     /// slider drag, replaced on every tick and flushed on quit.
     private var groupPersistTask: Task<Void, Never>?
     private var hotKeys: [GlobalHotKey] = []
+    private var inputHandoffInProgress = false
+    let peerPairing = PeerPairing()
+    @Published private(set) var sharedSetupSaveStatus: String?
+    @Published private(set) var isSavingSharedSetup = false
+    @Published private(set) var hasPendingSharedSetup = false
+    private let deviceActivity = DeviceActivityMonitor()
+    @Published private(set) var deviceActivityStatus: String?
+    @Published private(set) var devicesSplit = false
+    @Published private(set) var unavailableInputHotkeys: Set<String> = []
+    @Published private(set) var inputHandoffStatus: String?
+    /// Computer receiving the configured devices. This is independent of monitor readback.
+    @Published private(set) var activeInputSwitchBindingID: String?
+    private var refreshingActiveKVMState = false
+    private var activeKVMStateTask: Task<Void, Never>?
     private var registry: DisplayRegistry?
     private var sceneLibrary: SceneLibrary?
     /// Persisted user settings. Mutated only through the dedicated setters (which also persist and
@@ -375,7 +391,8 @@ final class AppModel: ObservableObject {
         )
         let settingsStore = (try? SettingsStore.defaultDirectory()).map(SettingsStore.init(directory:))
         self.settingsStore = settingsStore
-        let settings = settingsStore?.load() ?? .default
+        // Removed feature switches cannot keep running invisibly; their recovery data stays intact.
+        let settings = OpenSwitchFeaturePolicy.applying(to: settingsStore?.load() ?? .default)
         self.settings = settings
         self.sleepGuard = DisplaySleepGuard(backend: IOKitPowerAssertions())
         let favoritesStore = (try? SettingsStore.defaultDirectory()).map(FavoritesStore.init(directory:))
@@ -413,7 +430,9 @@ final class AppModel: ObservableObject {
             await reassertManagedOfflineIntent()  // a stamped owed-"off" survives a relaunch; pay it if covered
             reconcileDisplaySleepGuard()  // hold/release the keep-awake assertion for the launch topology
             #if !PUBLIC_API_ONLY
-            reconcileAdaptiveLoop()  // start adaptive brightness/warmth if enabled for this topology
+            // Restore any monitor colour preset owed by the removed warmth feature.
+            await restoreOwedDayPresets()
+            reconcileAdaptiveLoop()  // start the retained brightness-sync feature if enabled
             await restoreOwedAppPresetState()  // crash-safe: relaunch mid-app-preset restores the baseline
             reconcileAppPresetObserver()  // observe the frontmost app if App Presets is enabled
             #endif
@@ -439,6 +458,26 @@ final class AppModel: ObservableObject {
                 await debugDisconnectCycle(token: token)
             }
             #endif
+            deviceActivity.configure(names: Set(settings.hotkeyShortcuts.inputSwitchBindings.compactMap(\.peripherals)
+                .flatMap { [$0.keyboardName, $0.mouseName] }))
+            deviceActivity.onChange = { [weak self] in
+                Task { @MainActor [weak self] in await self?.refreshActiveKVMState() }
+            }
+            deviceActivity.start()
+            let monitor = deviceActivity
+            peerPairing.service.setActivityProvider { monitor.snapshot() }
+            activeKVMStateTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.refreshActiveKVMState()
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        }
+        peerPairing.setupTransport.setReceiver { [weak self] setup in
+            await self?.receiveSharedSetup(setup) ?? false
+        }
+        peerPairing.setupTransport.setRemovalReceiver { [weak self] setupID, revision in
+            await self?.receiveSharedSetupRemoval(setupID: setupID, revision: revision) ?? false
         }
         Task { await observeTopologyChanges() }
         // A software gamma dim persists until logout; restore on quit so it never outlives the app.
@@ -1925,7 +1964,8 @@ final class AppModel: ObservableObject {
     #endif
 
     /// Reads the external display's current DDC input source into the cache.
-    func refreshInputSource(for observation: DisplayObservation) async {
+    @discardableResult
+    func refreshInputSource(for observation: DisplayObservation) async -> Int? {
         #if !PUBLIC_API_ONLY
         let id = observation.recordID
         let vcp = ExternalDisplayDDC.Feature.inputSource.rawValue
@@ -1933,14 +1973,71 @@ final class AppModel: ObservableObject {
         // refreshBrightness), so it must only run when a probe can actually happen.
         guard observation.displayClass != .builtIn,
               let controller = await ddcController(for: observation),
-              ddcProbe[id, default: DDCProbeTracker()].admitProbe(vcp) else { return }
+              ddcProbe[id, default: DDCProbeTracker()].admitProbe(vcp) else { return nil }
         guard let reading = await controller.read(vcp: vcp) else {
             ddcProbe[id, default: DDCProbeTracker()].recordFailure(vcp)
-            return
+            return nil
         }
         ddcProbe[id, default: DDCProbeTracker()].recordSuccess(vcp)
         inputSource[id] = reading.current
+        return reading.current
+        #else
+        return nil
         #endif
+    }
+
+    /// Resolve configured-device ownership from native HID activity and paired peer summaries.
+    /// Input is timestamped at the source; only an elapsed age crosses the authenticated connection.
+    /// Inactivity preserves the last confirmation. A live split clears the selection.
+    func refreshActiveKVMState() async {
+        guard !refreshingActiveKVMState, !inputHandoffInProgress else { return }
+        refreshingActiveKVMState = true
+        defer { refreshingActiveKVMState = false }
+        let bindings = settings.hotkeyShortcuts.inputSwitchBindings
+        let names = Set(bindings.compactMap(\.peripherals).flatMap { [$0.keyboardName, $0.mouseName] }.filter { !$0.isEmpty })
+        deviceActivity.configure(names: names)
+        guard !names.isEmpty else { activeInputSwitchBindingID = nil; return }
+        let localID = peerPairing.localID
+        var snapshots: [UUID: DeviceActivitySnapshot] = [localID: deviceActivity.snapshot()]
+        let peers = Set(bindings.compactMap { $0.availabilityPeerID.flatMap(UUID.init(uuidString:)) })
+        for peer in peers where peer != localID {
+            if let snapshot = await peerPairing.service.activity(expectedID: peer) { snapshots[peer] = snapshot }
+        }
+        // A fresh local snapshot prevents input that arrived during a network query from being lost.
+        snapshots[localID] = deviceActivity.snapshot()
+        let owners = DeviceActivityOwnership.owners(names: names, snapshots: snapshots,
+            allPeersResponded: snapshots.count == peers.union([localID]).count)
+        let resolved = Set(owners.values)
+        devicesSplit = resolved.count > 1
+        if devicesSplit {
+            activeInputSwitchBindingID = nil
+            deviceActivityStatus = "Keyboard and mouse are connected to different computers."
+            return
+        }
+        guard owners.count == names.count, let owner = resolved.first else {
+            deviceActivityStatus = "Waiting for activity from the configured keyboard and mouse."
+            // Keep the last confirmed selection while a device sleeps or a peer reconnects.
+            if activeInputSwitchBindingID == nil,
+               let saved = UserDefaults.standard.string(forKey: "OpenSwitchLastInputOwner"),
+               let savedID = UUID(uuidString: saved) {
+                let matches = bindings.filter { binding in
+                    (binding.availabilityPeerID.flatMap(UUID.init(uuidString:)) ?? localID) == savedID
+                }
+                if matches.count == 1 { activeInputSwitchBindingID = matches[0].id }
+            }
+            return
+        }
+        let matches = bindings.filter { binding in
+            (binding.availabilityPeerID.flatMap(UUID.init(uuidString:)) ?? localID) == owner
+        }
+        guard matches.count == 1 else { activeInputSwitchBindingID = nil; return }
+        activeInputSwitchBindingID = matches[0].id
+        UserDefaults.standard.set(owner.uuidString, forKey: "OpenSwitchLastInputOwner")
+        let recentActivity = names.allSatisfy { name in
+            snapshots[owner]?.devices.contains { $0.name == name && $0.connected && ($0.activityAge ?? .infinity) <= 30 } == true
+        }
+        deviceActivityStatus = "Keyboard and mouse: \(matches[0].destinationLabel)"
+            + (recentActivity ? " · Activity confirmed" : " · Connected")
     }
 
     /// Switches the external display's DDC input source to `code` (e.g. HDMI/DisplayPort). User-driven.
@@ -1972,12 +2069,50 @@ final class AppModel: ObservableObject {
     #endif
 
     /// Fires an input-switch hotkey (todo 4: Lunar's "Input Hotkeys"). Resolves the bound display by
-    /// its persistent identity, then writes the input code through the same DDC feature/controller
-    /// `setInputSource` uses — hotkeys get no separate switching implementation. No-ops with a failure
-    /// notification when the display is offline or the panel rejects the write; confirms success with
-    /// the OSD, exactly like every other in-app input switch.
+    /// its saved identity, then writes through the DDC controller with the selected command channel.
+    /// No-ops with a failure notification when the display is offline or transport fails.
     func switchInputByHotkey(_ entry: InputSwitchBinding) async {
         #if !PUBLIC_API_ONLY
+        guard !inputHandoffInProgress else { return }
+        inputHandoffStatus = "Preparing input switch…"
+        inputHandoffInProgress = true
+        defer { inputHandoffInProgress = false }
+        if let peerString = entry.availabilityPeerID {
+            inputHandoffStatus = "Checking whether \(entry.destinationLabel) is responding…"
+            let peerID = UUID(uuidString: peerString)
+            let responding = if let peerID { await peerPairing.service.check(expectedID: peerID) } else { false }
+            if !responding {
+                let alert = NSAlert()
+                alert.messageText = "Can’t confirm \(entry.destinationLabel) is available"
+                alert.informativeText = "The other computer may be asleep or disconnected, or Local Network access may be blocked. Switching anyway could leave your screen and devices on an unavailable input."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Cancel")
+                alert.addButton(withTitle: "Switch Anyway")
+                NSApp.activate(ignoringOtherApps: true)
+                guard alert.runModal() == .alertSecondButtonReturn else {
+                    inputHandoffStatus = "Switch cancelled; the destination did not respond."
+                    return
+                }
+            }
+        }
+        let peripherals = entry.peripherals
+        if let peripherals, peripherals.mode != .monitorOnly {
+            let destination = KVMHandoffDestination(monitorID: entry.displayID.rawValue,
+                monitorInput: entry.inputCode, keyboardSlot: peripherals.keyboardSlot, mouseSlot: peripherals.mouseSlot)
+            guard (try? KVMHandoffPlan.steps(to: destination, mode: peripherals.mode)) != nil else {
+                await notifyInputSwitchFailed(entry.displayID, reason: "has invalid device slot settings")
+                return
+            }
+            let ready = await Task.detached {
+                guard LogitechHandoff.validate(name: peripherals.keyboardName, slot: peripherals.keyboardSlot) else { return false }
+                return peripherals.mode != .independent || LogitechHandoff.validate(name: peripherals.mouseName, slot: peripherals.mouseSlot)
+            }.value
+            guard ready else {
+                await notifyInputSwitchFailed(entry.displayID,
+                    reason: "could not find exactly one of each configured Logitech device; check names and Input Monitoring")
+                return
+            }
+        }
         guard let observation = displays.first(where: { $0.recordID == entry.displayID }) else {
             await notifyInputSwitchFailed(entry.displayID, reason: "is offline")
             return
@@ -1986,12 +2121,54 @@ final class AppModel: ObservableObject {
             await notifyInputSwitchFailed(entry.displayID, reason: "has no DDC control")
             return
         }
-        guard await controller.write(.inputSource, entry.inputCode) else {
-            await notifyInputSwitchFailed(entry.displayID, reason: "rejected the input switch")
+        let transport = entry.effectiveTransport
+        guard (0...0xFFFF).contains(entry.inputCode) else {
+            await notifyInputSwitchFailed(entry.displayID, reason: "has an invalid input code")
             return
         }
-        inputSource[entry.displayID] = entry.inputCode
-        presentInputSwitchOSD(inputName: inputName(entry.inputCode), for: observation)
+        // Show the target while this Mac is still visible. Once the DDC write succeeds, the
+        // monitor may immediately display the other computer, hiding any HUD shown afterwards.
+        if presentInputSwitchOSD(inputName: "Switching to \(transport.inputName(entry.inputCode))", for: observation) {
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+            catch { inputHandoffStatus = "Switch cancelled."; return }
+        }
+        guard await controller.write(vcp: transport.vcpCode, entry.inputCode,
+                                     sourceAddress: transport.sourceAddress) else {
+            await notifyInputSwitchFailed(entry.displayID, reason: "could not send the input command")
+            return
+        }
+        // Keep the previous confirmed device owner until HID evidence confirms the handoff.
+        // A transport write is not monitor acknowledgement; especially LG's alternate channel
+        // cannot reliably be read back. Do not populate the standard VCP 0x60 cache with it.
+        if transport == .standard { inputSource[entry.displayID] = entry.inputCode }
+        inputHandoffStatus = "Monitor command sent. Preparing devices…"
+        if let peripherals, peripherals.mode != .monitorOnly {
+            if peripherals.mode == .independent {
+                let mouseSent = await Task.detached {
+                    LogitechHandoff.send(name: peripherals.mouseName, slot: peripherals.mouseSlot)
+                }.value
+                guard mouseSent else {
+                    await notifyInputSwitchFailed(entry.displayID, reason: "was sent the monitor command, but the mouse command failed")
+                    return
+                }
+                inputHandoffStatus = "Monitor and mouse commands sent. Switching keyboard…"
+            }
+            let keyboardSent = await Task.detached {
+                LogitechHandoff.send(name: peripherals.keyboardName, slot: peripherals.keyboardSlot)
+            }.value
+            guard keyboardSent else {
+                let earlier = peripherals.mode == .independent ? "monitor and mouse commands were sent" : "the monitor command was sent"
+                await notifyInputSwitchFailed(entry.displayID, reason: "handoff incomplete: \(earlier), but the keyboard command failed")
+                return
+            }
+        }
+        if let peripherals, peripherals.mode == .independent {
+            inputHandoffStatus = "Monitor, mouse and keyboard commands sent. Confirm the switch on the destination."
+        } else if let peripherals, peripherals.mode == .keyboardLinked {
+            inputHandoffStatus = "Monitor and keyboard commands sent. Confirm the mouse followed and the switch completed."
+        } else {
+            inputHandoffStatus = "Monitor command sent. Confirm the monitor switched."
+        }
         #endif
     }
 
@@ -2000,7 +2177,10 @@ final class AppModel: ObservableObject {
     /// that's offline or NAKed the write. Named from the persistent registry, not `records`, since an
     /// offline display has no live observation to read a name from.
     private func notifyInputSwitchFailed(_ displayID: DisplayRecordID, reason: String) async {
-        let name = await registry?.record(for: displayID)?.displayName ?? displayID.rawValue
+        let knownName = await registry?.record(for: displayID)?.displayName
+        let name = displays.first(where: { $0.recordID == displayID }).map { displayName(for: $0) }
+            ?? knownName ?? displayID.rawValue
+        inputHandoffStatus = "Input switch failed: \(name) \(reason)."
         NotificationDelivery.post(NotificationPolicy.DisplayNotification(
             title: "Input switch failed", body: "\(name) \(reason)."
         ))
@@ -2341,6 +2521,12 @@ final class AppModel: ObservableObject {
                 brightness[builtIn.recordID] = sample
             }
         }
+        // OpenSwitch's retained brightness option follows the built-in display only. Do not
+        // fall back to a hidden time or location schedule when the built-in reading is absent.
+        if syncOn && !warmthOn && !clockOn && !locationOn && builtInSample == nil {
+            ambientLuxEMA = nil
+            return
+        }
         if mirrorActive, builtInObs == nil {
             // Built-in off: read the ambient light sensor directly (lid-open-display-off setups —
             // the sensor keeps reporting even though macOS drives no panel from it). EMA-smoothed;
@@ -2544,7 +2730,7 @@ final class AppModel: ObservableObject {
             } else if let elevation = locationElevationDegrees(at: now) {
                 parts.append("following sun position (\(Int(elevation.rounded()))°)")
             } else {
-                parts.append("on schedule (no light sensor)")
+                parts.append("waiting for built-in display")
             }
         }
         if settings.adaptiveWarmthEnabled {
@@ -4091,6 +4277,8 @@ final class AppModel: ObservableObject {
     /// delegate's `applicationShouldTerminate` defers termination until this completes so the
     /// reconnect actually lands before the process exits.
     func teardownForQuit() async {
+        activeKVMStateTask?.cancel()
+        activeKVMStateTask = nil
         #if !PUBLIC_API_ONLY
         // Stop adaptive first, then hand back the monitor's daytime colour preset if the evening
         // one is applied — awaited directly (the coalesced writers are fire-and-forget; quitting
@@ -4132,6 +4320,7 @@ final class AppModel: ObservableObject {
     /// registry, mapping each to its handler. Reconnect-All honours the existing enable toggle.
     private func registerHotkeys() {
         hotKeys.removeAll()
+        unavailableInputHotkeys.removeAll()
         let registry = settings.hotkeyShortcuts.mergedWithDefaults()
         var nextID: UInt32 = 1
         for action in HotkeyAction.allCases {
@@ -4147,6 +4336,12 @@ final class AppModel: ObservableObject {
             if let hotkey = GlobalHotKey(keyCode: entry.binding.keyCode, modifiers: entry.binding.modifiers,
                                          id: nextID, action: inputSwitchHotkeyHandler(for: entry)) {
                 hotKeys.append(hotkey)
+            } else {
+                unavailableInputHotkeys.insert(entry.id)
+                NotificationDelivery.post(NotificationPolicy.DisplayNotification(
+                    title: "Input shortcut unavailable",
+                    body: "Could not register the input shortcut. It may be claimed by another app. Try another shortcut."
+                ))
             }
             nextID += 1
         }
@@ -4187,6 +4382,249 @@ final class AppModel: ObservableObject {
         settings.hotkeyShortcuts = updatedRegistry
         persistSettings()
         registerHotkeys()
+        activeInputSwitchBindingID = nil
+    }
+
+    /// A network acknowledgement is sent only after local resolution and persistence succeed.
+    private func receiveSharedSetup(_ setup: SharedComputerSetup) -> Bool {
+        guard let peerID = peerPairing.pairedPeerID else {
+            sharedSetupSaveStatus = "Pair this Mac with the other Mac before saving the shared setup."
+            return false
+        }
+        guard let settingsStore else {
+            sharedSetupSaveStatus = "OpenSwitch could not open its settings folder. Restart the app and try again."
+            return false
+        }
+        guard setup.computers.count == 2,
+              Set(setup.computers.map(\.peerID)) == Set([peerID, peerPairing.localID]) else {
+            sharedSetupSaveStatus = "This setup does not match the two currently paired Macs. Reconnect the other Mac and try again."
+            return false
+        }
+        do {
+            do { try setup.validate() }
+            catch {
+                sharedSetupSaveStatus = "The setup details are incomplete or invalid: \(error.localizedDescription)"
+                return false
+            }
+            let displayID: DisplayRecordID
+            if let identity = setup.monitorIdentity {
+                guard let match = identity.uniqueMatch(in: registryKnownRecords) else {
+                    sharedSetupSaveStatus = "Could not identify the selected monitor on this Mac. Connect it, then choose its input again."
+                    return false
+                }
+                displayID = match
+            } else {
+                let matches = displays.filter {
+                    $0.displayClass != .builtIn && $0.displayClass != .virtual
+                        && displayName(for: $0) == setup.monitorName
+                }
+                guard matches.count == 1, let match = matches.first else {
+                    sharedSetupSaveStatus = matches.isEmpty
+                        ? "The selected monitor is not connected to this Mac. Connect it, then save the setup again."
+                        : "More than one monitor has that name. Rename the display in Settings → Displays, then try again."
+                    return false
+                }
+                displayID = match.recordID
+            }
+            let bindings = try setup.bindings(localID: peerPairing.localID, displayID: displayID)
+            let ledger = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-applied.json")
+            let removalLedger = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-removed.json")
+            if let data = try? Data(contentsOf: removalLedger),
+               let removed = try? JSONDecoder().decode(SharedSetupRemovalRecord.self, from: data),
+               removed.setupID == setup.id, setup.revision < removed.revision {
+                sharedSetupSaveStatus = "This setup was removed from the pair. Run setup again to create a new shared configuration."
+                return false
+            }
+            let applied: SharedComputerSetup?
+            if FileManager.default.fileExists(atPath: ledger.path) {
+                applied = try JSONDecoder().decode(SharedComputerSetup.self, from: Data(contentsOf: ledger))
+            } else { applied = nil }
+            switch SharedSetupRevisionDecision.decide(incoming: setup, applied: applied) {
+            case .rejectOlder:
+                sharedSetupSaveStatus = "This Mac already has a newer setup. Reopen setup here and save again."
+                return false
+            case .rejectDifferentSetup:
+                sharedSetupSaveStatus = "This Mac is paired to a different setup. Reconnect the intended Mac before saving."
+                return false
+            case .alreadyApplied:
+                let complete = bindings.allSatisfy { binding in
+                    settings.hotkeyShortcuts.inputSwitchBindings.contains(binding)
+                        && !unavailableInputHotkeys.contains(binding.id)
+                }
+                if !complete {
+                    sharedSetupSaveStatus = "A shortcut could not be registered. Choose an unused shortcut in setup and save again."
+                }
+                return complete
+            case .apply: break
+            }
+            let registry = try SharedSetupMigration.merging(bindings, into: settings.hotkeyShortcuts)
+            var updated = settings
+            updated.hotkeyShortcuts = registry
+            try settingsStore.save(updated)
+            settings = updated
+            registerHotkeys()
+            try JSONEncoder().encode(setup).write(to: ledger, options: .atomic)
+            activeInputSwitchBindingID = nil
+            let complete = bindings.allSatisfy { !unavailableInputHotkeys.contains($0.id) }
+            if !complete {
+                sharedSetupSaveStatus = "Setup saved, but a shortcut is already claimed by another app. Choose another shortcut."
+            }
+            return complete
+        } catch {
+            sharedSetupSaveStatus = "Could not write the setup on this Mac: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Removes the complete shared pair configuration on this Mac. Paired removal is acknowledged
+    /// before local settings are cleared, so an unreachable Mac does not leave an asymmetric setup.
+    func removeSharedComputerSetup() async -> Bool {
+        guard let peerID = peerPairing.pairedPeerID else {
+            sharedSetupSaveStatus = "Reconnect the paired Mac before removing the shared setup."
+            return false
+        }
+        do {
+            let directory = try SettingsStore.defaultDirectory()
+            let ledgerURL = directory.appendingPathComponent("shared-setup-applied.json")
+            guard let data = try? Data(contentsOf: ledgerURL),
+                  let setup = try? JSONDecoder().decode(SharedComputerSetup.self, from: data),
+                  Set(setup.computers.map(\.peerID)) == Set([peerPairing.localID, peerID]) else {
+                sharedSetupSaveStatus = "There is no matching shared setup to remove. Reopen setup and save the pair again."
+                return false
+            }
+            guard setup.revision < UInt64.max else {
+                sharedSetupSaveStatus = "This setup cannot be removed safely because its revision limit was reached."
+                return false
+            }
+            let revision = setup.revision + 1
+            sharedSetupSaveStatus = "Removing the shared setup from both Macs…"
+            guard await peerPairing.setupTransport.sendRemoval(setupID: setup.id, revision: revision) else {
+                sharedSetupSaveStatus = "The other Mac did not confirm removal. It is still set up here; reconnect it and try again."
+                return false
+            }
+            guard receiveSharedSetupRemoval(setupID: setup.id, revision: revision) else {
+                sharedSetupSaveStatus = "The other Mac removed its setup, but this Mac could not clear its settings. Reopen Settings and try again."
+                return false
+            }
+            sharedSetupSaveStatus = "Shared setup removed from both Macs. Run setup again to switch between them."
+            return true
+        } catch {
+            sharedSetupSaveStatus = "Could not remove the shared setup: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Applies a trusted paired removal. A local tombstone makes a retried removal idempotent and
+    /// prevents an old setup offer from being mistaken for the current pair configuration.
+    private func receiveSharedSetupRemoval(setupID: UUID, revision: UInt64) -> Bool {
+        guard revision > 0, peerPairing.pairedPeerID != nil, let settingsStore else { return false }
+        do {
+            let directory = try SettingsStore.defaultDirectory()
+            let ledgerURL = directory.appendingPathComponent("shared-setup-applied.json")
+            let tombstoneURL = directory.appendingPathComponent("shared-setup-removed.json")
+            if let data = try? Data(contentsOf: ledgerURL),
+               let current = try? JSONDecoder().decode(SharedComputerSetup.self, from: data) {
+                guard current.id == setupID, revision > current.revision else { return false }
+            } else if let data = try? Data(contentsOf: tombstoneURL),
+                      let removed = try? JSONDecoder().decode(SharedSetupRemovalRecord.self, from: data) {
+                guard removed.setupID == setupID, revision >= removed.revision else { return false }
+            } else {
+                return false
+            }
+            let record = SharedSetupRemovalRecord(setupID: setupID, revision: revision)
+            try JSONEncoder().encode(record).write(to: tombstoneURL, options: .atomic)
+            var registry = settings.hotkeyShortcuts
+            for binding in registry.inputSwitchBindings where binding.id.hasPrefix("\(setupID.uuidString):") {
+                registry.removeInputSwitchBinding(id: binding.id)
+            }
+            var updated = settings
+            updated.hotkeyShortcuts = registry
+            try settingsStore.save(updated)
+            settings = updated
+            registerHotkeys()
+            if let data = try? Data(contentsOf: ledgerURL),
+               let applied = try? JSONDecoder().decode(SharedComputerSetup.self, from: data), applied.id == setupID {
+                try FileManager.default.removeItem(at: ledgerURL)
+            }
+            let pendingURL = directory.appendingPathComponent("shared-setup-delivery.json")
+            if let data = try? Data(contentsOf: pendingURL),
+               let pending = try? JSONDecoder().decode(SharedSetupDelivery.self, from: data), pending.setup.id == setupID {
+                try FileManager.default.removeItem(at: pendingURL)
+                hasPendingSharedSetup = false
+            }
+            activeInputSwitchBindingID = nil
+            return true
+        } catch {
+            sharedSetupSaveStatus = "Could not clear the shared setup on this Mac: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func saveSharedSetup(_ setup: SharedComputerSetup) async -> Bool {
+        guard !isSavingSharedSetup else { return false }
+        guard let peerID = peerPairing.pairedPeerID else {
+            sharedSetupSaveStatus = "Pair this Mac with the other Mac before saving the shared setup."
+            return false
+        }
+        isSavingSharedSetup = true
+        defer { isSavingSharedSetup = false }
+        do {
+            var delivery = try SharedSetupDelivery(setup: setup, peerID: peerID)
+            let pending = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-delivery.json")
+            if FileManager.default.fileExists(atPath: pending.path) {
+                let previous = try JSONDecoder().decode(SharedSetupDelivery.self, from: Data(contentsOf: pending))
+                if previous.status == .pending && (previous.peerID != peerID || previous.setup != setup) {
+                    hasPendingSharedSetup = true
+                    sharedSetupSaveStatus = "A previous setup is waiting for confirmation. Retry that save first."
+                    return false
+                }
+            }
+            try JSONEncoder().encode(delivery).write(to: pending, options: .atomic)
+            hasPendingSharedSetup = true
+            guard receiveSharedSetup(setup) else {
+                if sharedSetupSaveStatus == nil {
+                    sharedSetupSaveStatus = "Setup needs attention on this Mac. Check the monitor and shortcuts."
+                }
+                return false
+            }
+            sharedSetupSaveStatus = "Saved on this Mac. Waiting for the other Mac…"
+            guard await peerPairing.setupTransport.send(setup) else {
+                sharedSetupSaveStatus = "Saved on this Mac. The other Mac has not confirmed; retry when it is ready."
+                return false
+            }
+            guard peerPairing.pairedPeerID == peerID else { return false }
+            delivery.acknowledge(setupID: setup.id, revision: setup.revision, from: peerID)
+            try JSONEncoder().encode(delivery).write(to: pending, options: .atomic)
+            hasPendingSharedSetup = false
+            sharedSetupSaveStatus = "Setup saved on both Macs."
+            return true
+        } catch {
+            sharedSetupSaveStatus = "Setup could not be saved: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func refreshPendingSharedSetup() {
+        guard let directory = try? SettingsStore.defaultDirectory(),
+              let data = try? Data(contentsOf: directory.appendingPathComponent("shared-setup-delivery.json")),
+              let delivery = try? JSONDecoder().decode(SharedSetupDelivery.self, from: data),
+              delivery.status == .pending else {
+            hasPendingSharedSetup = false
+            return
+        }
+        hasPendingSharedSetup = true
+        sharedSetupSaveStatus = delivery.peerID == peerPairing.pairedPeerID
+            ? "A previous setup is waiting for confirmation from the other Mac."
+            : "A previous setup is waiting for its paired Mac."
+    }
+
+    func retrySharedSetup() async -> Bool {
+        do {
+            let pending = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-delivery.json")
+            let delivery = try JSONDecoder().decode(SharedSetupDelivery.self, from: Data(contentsOf: pending))
+            guard delivery.peerID == peerPairing.pairedPeerID else { return false }
+            return await saveSharedSetup(delivery.setup)
+        } catch { return false }
     }
 
     /// Removes an input-switch hotkey binding, persists, and re-registers.
@@ -4196,6 +4634,19 @@ final class AppModel: ObservableObject {
         settings.hotkeyShortcuts = updatedRegistry
         persistSettings()
         registerHotkeys()
+        activeInputSwitchBindingID = nil
+    }
+
+    func setMenuBarComputerLabel(_ label: MenuBarComputerLabel) {
+        guard settings.menuBarComputerLabel != label else { return }
+        settings.menuBarComputerLabel = label
+        persistSettings()
+    }
+
+    func setOpenSwitchTextSize(_ size: OpenSwitchTextSize) {
+        guard settings.openSwitchTextSize != size else { return }
+        settings.openSwitchTextSize = size
+        persistSettings()
     }
 
     /// True if `combo` is already claimed by any registered hotkey (fixed action or input-switch)
@@ -4221,32 +4672,27 @@ final class AppModel: ObservableObject {
 
     // MARK: - OSD HUD + media keys (Batch-3)
 
-    /// Show the OSD HUD for a brightness/volume change and (when enabled) broadcast it for external/
-    /// notch HUDs (Batch-3 #4/#6). The single funnel that `setBrightness` / `setHardwareControl(.volume)`
+    /// Show the OSD HUD for a brightness/volume change. The single funnel that `setBrightness` / `setHardwareControl(.volume)`
     /// call, so the HUD fires for every in-app source (menu slider, media keys).
     func presentOSD(kind: OSDContent.Kind, value: Float, for observation: DisplayObservation,
                     source: String = "app") {
         let content = OSDContent(kind: kind, value: value)
         if settings.osdEnabled && settings.osdStyle != .external {
             osdHUD.present(content, cgDisplayID: observation.cgDisplayID,
-                           style: settings.osdStyle, position: settings.osdPosition)
-        }
-        if settings.publishOSDEventsEnabled {
-            OSDBroadcaster.publish(kind: kind, value: Double(value),
-                                   displayID: observation.recordID.rawValue,
-                                   displayName: displayName(for: observation), source: source)
+                           style: settings.osdStyle, position: settings.osdPosition,
+                           textSize: settings.openSwitchTextSize)
         }
     }
 
-    /// Confirms a hotkey-driven input switch with the OSD HUD (todo 4) — the same on-screen
-    /// confirmation brightness/volume changes get, so a KVM-style input jump is never silent. Not
-    /// broadcast: the external/notch HUD schema (Batch-3 #6) only understands the level-based kinds
-    /// today.
-    private func presentInputSwitchOSD(inputName: String, for observation: DisplayObservation) {
-        guard settings.osdEnabled, settings.osdStyle != .external else { return }
+    /// Announces the target before switching; false means no HUD was shown and no pause is needed.
+    @discardableResult
+    private func presentInputSwitchOSD(inputName: String, for observation: DisplayObservation) -> Bool {
+        guard settings.osdEnabled, settings.osdStyle != .external else { return false }
         let content = OSDContent(kind: .input, value: 0, label: inputName)
         osdHUD.present(content, cgDisplayID: observation.cgDisplayID,
-                       style: settings.osdStyle, position: settings.osdPosition)
+                       style: settings.osdStyle, position: settings.osdPosition,
+                       textSize: settings.openSwitchTextSize)
+        return true
     }
 
     /// Handle a captured media key (Batch-3 #1/#3). Resolves the target display via the pure
@@ -4411,7 +4857,7 @@ final class AppModel: ObservableObject {
     /// silent in normal runs. Run the app binary directly with the env var set to verify live
     /// enumeration without needing the menu-bar UI. DEBUG-only (excluded from release / App Store).
     private static func dump(_ snapshot: TopologySnapshot) {
-        var out = "OpenDisplay topology \(snapshot.generation):\n"
+        var out = "OpenSwitch topology \(snapshot.generation):\n"
         for o in snapshot.observations.sorted(by: { $0.recordID.rawValue < $1.recordID.rawValue }) {
             let mode = o.mode.map { "\($0.pixelWidth)x\($0.pixelHeight)@\(Int($0.refreshHz.rounded()))" } ?? "—"
             out += "  \(o.isActive ? "●" : "○") \(o.recordID.rawValue)"

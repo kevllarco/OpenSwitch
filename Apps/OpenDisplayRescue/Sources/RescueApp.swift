@@ -101,7 +101,7 @@ struct RescueView: View {
                     Text("OpenDisplay Rescue").font(.title3).bold()
                     if let capturedAt = model.capturedAt {
                         Text("Checkpoint captured \(capturedAt.formatted(date: .abbreviated, time: .standard))")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .appBodyFont().foregroundStyle(.secondary)
                     }
                 }
             }
@@ -109,7 +109,7 @@ struct RescueView: View {
             Divider()
 
             if model.displays.isEmpty {
-                Text(model.status).font(.callout).foregroundStyle(.secondary)
+                Text(model.status).appBodyFont().foregroundStyle(.secondary)
             } else {
                 ForEach(model.displays, id: \.recordID) { display in
                     HStack(spacing: 8) {
@@ -117,13 +117,13 @@ struct RescueView: View {
                             .fill(display.isActive ? Color.green : Color.orange)
                             .frame(width: 8, height: 8)
                         Text(display.recordID.rawValue).font(.system(.body, design: .monospaced))
-                        if display.isMain { Text("Main").font(.caption2).foregroundStyle(.secondary) }
+                        if display.isMain { Text("Main").appBodyFont().foregroundStyle(.secondary) }
                         Spacer()
                         Text(display.isActive ? "Active" : "Offline")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .appBodyFont().foregroundStyle(.secondary)
                     }
                 }
-                Text(model.status).font(.caption).foregroundStyle(.secondary)
+                Text(model.status).appBodyFont().foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -134,6 +134,7 @@ struct RescueView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .appBodyFont()
     }
 }
 #endif

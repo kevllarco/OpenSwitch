@@ -1,6 +1,8 @@
 #if os(macOS)
 import AppKit
+import Combine
 import SwiftUI
+import TopologyCore
 
 /// Menu-bar-first entry point (PRD UX-001). `LSUIElement` keeps it out of the Dock. The menu bar AND
 /// the Settings window are both AppKit-managed by `AppDelegate`: SwiftUI's `MenuBarExtra` mis-anchors
@@ -70,30 +72,25 @@ private struct SettingsSceneRedirect: NSViewRepresentable {
     }
 }
 
-/// Owns the menu-bar status item + popover and the shared `AppModel`, and receives `opendisplay://`
-/// URL activations (Issue 4).
-///
-/// Why AppKit instead of `MenuBarExtra`: with several displays, SwiftUI's `MenuBarExtra(.window)`
-/// pop-out frequently opens on the *wrong* screen (often the opposite one from the click). An
-/// `NSPopover` shown `relativeTo:` the clicked status-item button always anchors below the icon on the
-/// screen the user clicked, and — with "Displays have separate Spaces" — stays there even when a
-/// set-main changes the primary display. The Keep/Revert confirmation lives inside that pop-out.
+/// A key-capable panel keeps keyboard access while retaining a menu-bar-only app.
+private final class MenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// Owns the menu-bar status item, its panel, and the shared model.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     private var statusItem: NSStatusItem?
-    private let popover = NSPopover()
+    private var menuPanel: NSPanel?
+    private var menuLocalMonitor: Any?
+    private var menuGlobalMonitor: Any?
     private var settingsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var settingsKeyMonitor: Any?
+    private var statusPresentationObservation: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        popover.behavior = .transient
-        popover.animates = false
-        let controller = NSHostingController(rootView: MenuBarView().environmentObject(model))
-        controller.sizingOptions = [.preferredContentSize]
-        popover.contentViewController = controller
-
         // Close the pop-out when an action that re-lays-out the displays is picked (e.g. Set as Main):
         // otherwise the open pop-out, anchored to the status item, gets displaced to a random spot when
         // set-main relocates the menu bar to the new main display.
@@ -105,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(showSettings), name: .openDisplayShowSettings, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(showAbout), name: .openDisplayShowAbout, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handlePairingRequest(_:)), name: .openSwitchPairingRequestReceived, object: nil)
 
         // ⌘, is registered by the placeholder SwiftUI `Settings` scene, whose window is not the real
         // settings UI. Intercept the shortcut before the scene sees it and open OUR Settings window —
@@ -121,29 +120,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: Bundle.main.bundleIdentifier, suspensionBehavior: .deliverImmediately)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "OpenDisplay")
+        item.button?.imagePosition = .imageLeading
         item.button?.action = #selector(togglePopover(_:))
         item.button?.target = self
         statusItem = item
+        statusPresentationObservation = model.$activeInputSwitchBindingID
+            .combineLatest(model.$settings, model.$deviceActivityStatus)
+            .sink { [weak self] _, _, _ in
+                DispatchQueue.main.async {
+                    self?.updateStatusItem()
+                }
+            }
+        updateStatusItem()
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        button.image = NSImage(systemSymbolName: "display", accessibilityDescription: "OpenSwitch")
+        let active = model.settings.hotkeyShortcuts.inputSwitchBindings.first {
+            $0.id == model.activeInputSwitchBindingID
+        }
+        switch model.settings.menuBarComputerLabel {
+        case .iconOnly:
+            button.title = ""
+            button.toolTip = active.map { "OpenSwitch — keyboard and mouse: \($0.destinationLabel)" }
+                ?? "OpenSwitch — waiting for keyboard and mouse activity"
+        case .computerNumber:
+            let number = active.flatMap { entry in
+                (1...9).first { HotkeyDigitChords.binding(forDigit: $0).keyCode == entry.binding.keyCode }
+            }.map(String.init) ?? "?"
+            button.title = " \(number)"
+            button.toolTip = active.map { "OpenSwitch — keyboard and mouse: \($0.destinationLabel)" }
+                ?? "OpenSwitch — waiting for keyboard and mouse activity"
+        case .computerName:
+            button.title = " \(active?.destinationLabel ?? "?")"
+            button.toolTip = active.map { "OpenSwitch — keyboard and mouse: \($0.destinationLabel)" }
+                ?? "OpenSwitch — waiting for keyboard and mouse activity"
+        }
+        if let status = model.deviceActivityStatus { button.toolTip = "OpenSwitch — " + status }
     }
 
     @objc private func togglePopover(_ sender: Any?) {
         guard let button = statusItem?.button else { return }
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            guard let window = popover.contentViewController?.view.window else { return }
-            window.makeKey()
-            // AppKit hands initial key focus to the first control (the gear button), which paints an
-            // accent focus ring the moment the pop-out opens. Clear it — Tab still reaches every
-            // control for keyboard users; the ring just doesn't appear until they ask for it.
-            DispatchQueue.main.async { window.makeFirstResponder(nil) }
+        if menuPanel?.isVisible == true { dismissPopover(); return }
+        guard let buttonWindow = button.window, let screen = buttonWindow.screen else { return }
+        let hosting = NSHostingController(rootView: MenuBarView().environmentObject(model))
+        let view = hosting.view
+        let size = view.fittingSize
+        guard size.width > 0, size.height > 0 else { return }
+        let panel = MenuPanel(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        panel.contentViewController = hosting
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .popUpMenu
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view.layer?.cornerRadius = 10
+        view.layer?.masksToBounds = true
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = screen.visibleFrame
+        let x = min(max(anchor.minX, visible.minX), max(visible.minX, visible.maxX - size.width))
+        panel.setFrameOrigin(NSPoint(x: x, y: anchor.minY - size.height - 2))
+        menuPanel = panel
+        panel.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { panel.makeFirstResponder(nil) }
+        menuLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self, weak panel, weak buttonWindow] event in
+            let consume = MainActor.assumeIsolated {
+                if event.type == .keyDown && event.keyCode == 53 { self?.dismissPopover(); return true }
+                if event.type != .keyDown && event.window !== panel && event.window !== buttonWindow {
+                    self?.dismissPopover()
+                }
+                return false
+            }
+            return consume ? nil : event
+        }
+        menuGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in self?.dismissPopover() }
         }
     }
 
     @objc private func dismissPopover() {
-        if popover.isShown { popover.performClose(nil) }
+        menuPanel?.orderOut(nil)
+        menuPanel = nil
+        if let monitor = menuLocalMonitor { NSEvent.removeMonitor(monitor); menuLocalMonitor = nil }
+        if let monitor = menuGlobalMonitor { NSEvent.removeMonitor(monitor); menuGlobalMonitor = nil }
     }
 
     /// Opening the app while it is already running (Finder, Spotlight, Launchpad) opens Settings.
@@ -166,10 +231,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let hosting = NSHostingController(rootView: SettingsView().environmentObject(model))
             let created = NSWindow(contentViewController: hosting)
-            created.title = "OpenDisplay Settings"
-            created.styleMask = [.titled, .closable, .miniaturizable]
+            created.title = ""
+            created.identifier = NSUserInterfaceItemIdentifier("OpenSwitch.Settings")
+            created.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            created.styleMask.insert(.fullSizeContentView)
+            created.titlebarAppearsTransparent = true
+            created.toolbarStyle = .unifiedCompact
             created.isReleasedWhenClosed = false
-            created.setContentSize(NSSize(width: 720, height: 520))
+            created.contentMinSize = NSSize(width: 800, height: 560)
+            created.setContentSize(NSSize(width: 860, height: 620))
+            for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+                created.standardWindowButton(button)?.isHidden = false
+            }
             settingsWindow = created
             window = created
         }
@@ -185,6 +258,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    private func resizeAboutWindow(for textSize: OpenSwitchTextSize) {
+        guard let window = aboutWindow else { return }
+        let height = max(window.contentView?.frame.height ?? 0, 420)
+        window.setContentSize(NSSize(width: textSize.aboutWindowWidth, height: height))
+    }
+
+    @objc private func handlePairingRequest(_ notification: Notification) {
+        guard let requestID = notification.userInfo?["requestID"] as? String,
+              let computerName = notification.userInfo?["computerName"] as? String else { return }
+        let alert = NSAlert()
+        alert.messageText = "Allow \(computerName) to connect?"
+        alert.informativeText = "OpenSwitch will securely pair with this Mac so it can check availability and share basic keyboard and mouse status. Keystrokes and mouse actions are never shared."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Don’t Allow")
+        NSApp.activate(ignoringOtherApps: true)
+        let request = IncomingOpenSwitchPairing(id: requestID, computerName: computerName)
+        if alert.runModal() == .alertFirstButtonReturn {
+            model.peerPairing.accept(request)
+        } else {
+            model.peerPairing.decline(request)
+        }
+    }
+
     /// Opens (or re-focuses) the custom About window (`AboutView`) — same ownership story as
     /// Settings: an AppKit window the delegate places on the screen the user is looking at.
     @objc private func showAbout() {
@@ -195,12 +292,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let hosting = NSHostingController(rootView: AboutView().environmentObject(model))
             let created = NSWindow(contentViewController: hosting)
-            created.title = "About OpenDisplay"
+            created.title = "About OpenSwitch"
             created.styleMask = [.titled, .closable]
             created.isReleasedWhenClosed = false
+            created.setContentSize(NSSize(width: model.settings.openSwitchTextSize.aboutWindowWidth, height: 420))
             aboutWindow = created
             window = created
         }
+        resizeAboutWindow(for: model.settings.openSwitchTextSize)
         if let screen = NSScreen.screens.first(where: {
             NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
         }) ?? NSScreen.main {
@@ -245,5 +344,7 @@ extension Notification.Name {
     static let openDisplayShowSettingsFromSibling = Notification.Name("dev.opendisplay.app.showSettings")
     /// Posted by the menu's "About OpenDisplay" item; the delegate owns the About window.
     static let openDisplayShowAbout = Notification.Name("OpenDisplayShowAbout")
+    /// Posted when a nearby OpenSwitch Mac asks to establish a trusted peer connection.
+    static let openSwitchPairingRequestReceived = Notification.Name("OpenSwitchPairingRequestReceived")
 }
 #endif

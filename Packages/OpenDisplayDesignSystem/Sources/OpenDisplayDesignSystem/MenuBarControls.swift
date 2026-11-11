@@ -45,9 +45,9 @@ public struct ODSliderRow: View {
             }
             if let valueText {
                 Text(valueText)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary)
                     .monospacedDigit()
-                    .frame(width: 30, alignment: .trailing)
+                    .frame(width: 42, alignment: .trailing)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -91,10 +91,10 @@ public struct ODChip: View {
             if let systemImage { Image(systemName: systemImage).font(.system(size: 10)) }
             Text(text)
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(.body.weight(.medium))
         .foregroundStyle(foreground)
         .padding(.horizontal, 8)
-        .frame(height: 22)
+        .frame(minHeight: 28)
         .background(background, in: RoundedRectangle(cornerRadius: ODRadius.control))
         .contentShape(Rectangle())
 
@@ -143,11 +143,11 @@ public struct ODQuickAction: View {
         Button { if enabled { action() } } label: {
             HStack(spacing: 5) {
                 Image(systemName: systemImage).font(.system(size: 13))
-                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Text(label).font(.body.weight(.medium)).lineLimit(1)
             }
             .foregroundStyle(foreground)
             .frame(maxWidth: .infinity)
-            .frame(height: 26)
+            .frame(minHeight: 34)
             .background(ODColor.fillTertiary.opacity(hovering && enabled ? 1.7 : 1),
                         in: RoundedRectangle(cornerRadius: 7))
             .contentShape(Rectangle())

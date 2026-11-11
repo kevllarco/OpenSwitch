@@ -22,6 +22,9 @@ import TopologyCore
 /// for the lifetime of the app.
 @MainActor
 final class SoftwareUpdater: NSObject {
+    /// Enable only builds explicitly configured with an OpenSwitch-owned feed and signing key.
+    static let updatesEnabled = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String != nil
+        && Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String != nil
     /// Called on the main actor whenever `phase` changes. `AppModel` mirrors it into a published
     /// property; nothing in this file knows about SwiftUI.
     var onPhaseChange: ((SoftwareUpdatePhase) -> Void)?
@@ -52,6 +55,7 @@ final class SoftwareUpdater: NSObject {
     /// cycle (which begins on the next runloop pass) sees the settings the user actually chose.
     init(behavior: AutomaticUpdateBehavior) {
         super.init()
+        guard Self.updatesEnabled else { return }
         apply(behavior)
         observeAutomaticDownloadPreference()
         updaterController.startUpdater()
@@ -68,6 +72,7 @@ final class SoftwareUpdater: NSObject {
     /// see `observeAutomaticDownloadPreference`. Sparkle re-schedules its cycle after either flag
     /// changes, so no explicit reset is needed here.
     func apply(_ behavior: AutomaticUpdateBehavior) {
+        guard Self.updatesEnabled else { return }
         updaterController.updater.automaticallyChecksForUpdates = behavior.checksForUpdates
         updaterController.updater.automaticallyDownloadsUpdates = behavior.downloadsAndInstalls
     }
@@ -80,6 +85,7 @@ final class SoftwareUpdater: NSObject {
     /// of its own is mid-flight — it drops the request silently, and a phase moved to `checking` would
     /// sit on a spinner no callback ever clears.
     func checkForUpdates() {
+        guard Self.updatesEnabled else { return }
         guard updaterController.updater.canCheckForUpdates else { return }
         NotificationCenter.default.post(name: .openDisplayDismissMenu, object: nil)
         activateForUpdaterWindow()
@@ -129,7 +135,7 @@ private struct DowngradeRefused: LocalizedError {
     let running: String
 
     var errorDescription: String? {
-        "The update feed offers OpenDisplay \(advertised), which is older than the \(running) you are "
+        "The update feed offers OpenSwitch \(advertised), which is older than the \(running) you are "
             + "running. Nothing was installed."
     }
 }

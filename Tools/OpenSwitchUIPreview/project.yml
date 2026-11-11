@@ -1,0 +1,26 @@
+name: OpenSwitchUI
+options:
+  deploymentTarget:
+    macOS: '14.0'
+targets:
+  OpenSwitchUI:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: ../../Apps/OpenDisplay/Sources/SwitchMenuComponents.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kevllar.openswitch.uipreview
+        PRODUCT_NAME: OpenSwitch UI Preview
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: '6.0'
+        CODE_SIGNING_ALLOWED: NO
+        MACOSX_DEPLOYMENT_TARGET: '14.0'
+schemes:
+  OpenSwitchUI:
+    build:
+      targets:
+        OpenSwitchUI: all
+    run:
+      config: Debug

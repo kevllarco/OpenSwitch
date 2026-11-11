@@ -29,20 +29,19 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
-# Sparkle 2 powers the in-app updater (SoftwareUpdater.swift). It ships as a binary xcframework, so
-# SwiftPM resolves it here rather than in Package.swift — the cross-platform package graph stays
-# buildable on Linux. The signing/appcast tools travel inside the same artifact
-# (…/SourcePackages/artifacts/sparkle/Sparkle/bin); scripts/release-signed.sh finds them there.
+# Sparkle is retained for a future OpenSwitch-owned update feed; SoftwareUpdater currently gates it off.
+# SwiftPM resolves its binary xcframework here, keeping Package.swift's core graph cross-platform.
+# The artifact also contains signing/appcast tools used by scripts/release-signed.sh.
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.5"
+    exactVersion: "2.9.5"
 
 settings:
   base:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.11.6"
-    CURRENT_PROJECT_VERSION: "25"
+    CURRENT_PROJECT_VERSION: "40.9"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
 
@@ -154,6 +153,18 @@ targets:
   OpenDisplay:
     type: application
     platform: macOS
+    postCompileScripts:
+      - name: Build Logitech HID++ helper
+        script: '"$SRCROOT/scripts/build-desk-switch-helper.sh"'
+        inputFiles:
+          - $(SRCROOT)/Tools/DeskSwitchHelper/mxswitch.c
+          - $(SRCROOT)/Tools/DeskSwitchHelper/LICENSE
+          - $(SRCROOT)/Tools/DeskSwitchKeychain/desk-switch-keychain.c
+          - $(SRCROOT)/scripts/build-desk-switch-helper.sh
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/desk-switch-hid
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/desk-switch-keychain
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/DeskSwitchHelper-LICENSE.txt
     sources:
       - Apps/OpenDisplay/Sources
       - path: Apps/OpenDisplay/Resources/AppIcon.icns

@@ -32,11 +32,11 @@ public struct ODBadge: View {
 
     public var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .medium))
+            .font(.body.weight(.medium))
             .lineLimit(1)
             .foregroundStyle(foreground)
             .padding(.horizontal, 6)
-            .frame(height: 16)
+            .frame(minHeight: 24)
             .background(background, in: RoundedRectangle(cornerRadius: ODRadius.badge))
     }
 

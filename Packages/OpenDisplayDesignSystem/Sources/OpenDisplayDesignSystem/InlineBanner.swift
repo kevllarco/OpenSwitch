@@ -33,9 +33,9 @@ public struct ODInlineBanner<Actions: View>: View {
                 Image(systemName: systemImage).foregroundStyle(rail).padding(.top, 1)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                Text(title).font(.headline.weight(.semibold)).foregroundStyle(.primary)
                 if let message {
-                    Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(message).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !(actions is EmptyView) {
@@ -44,7 +44,7 @@ public struct ODInlineBanner<Actions: View>: View {
             }
             Spacer(minLength: 0)
             if let countdown {
-                Text("\(countdown)s").font(.system(size: 11, weight: .medium))
+                Text("\(countdown)s").font(.body.weight(.medium))
                     .monospacedDigit().foregroundStyle(.secondary)
             }
         }

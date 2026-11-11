@@ -41,3 +41,9 @@ build/
 # Signed/notarized release artifacts (scripts/release-signed.sh)
 dist/
 .gstack/
+
+# Local generated UI preview project
+/Tools/OpenSwitchUIPreview/*.xcodeproj/
+
+# Private development update feed details and signing instructions
+/Docs/PRIVATE-UPDATES.md

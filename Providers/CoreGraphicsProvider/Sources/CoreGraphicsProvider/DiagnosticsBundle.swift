@@ -54,7 +54,7 @@ public enum DiagnosticsBundle {
 
     /// What the bundle holds, in the words shown to the user before they export.
     public static let contents = [
-        "OpenDisplay's own records: the display event timeline, the audit log, the list of displays "
+        "OpenSwitch's own records: the display event timeline, the audit log, the list of displays "
             + "it turned off, its display registry, and its settings (location and app presets removed)",
         "macOS's saved display configuration, now and as copied before recent disconnects",
         "What macOS reports about the displays, the graphics link, and Thunderbolt devices "
@@ -66,7 +66,7 @@ public enum DiagnosticsBundle {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return "OpenDisplay-diagnostics-\(formatter.string(from: now)).zip"
+        return "OpenSwitch-diagnostics-\(formatter.string(from: now)).zip"
     }
 
     /// Collects everything into a temporary folder, zips it into `directory`, and returns the zip.
@@ -151,16 +151,15 @@ public enum DiagnosticsBundle {
 
     private static func readme(app: AppInfo, now: Date) -> String {
         """
-        OpenDisplay diagnostics bundle
-        Exported \(ISO8601DateFormatter().string(from: now)) by OpenDisplay \(app.version) (\(app.build), \(app.flavor))
+        OpenSwitch diagnostics bundle
+        Exported \(ISO8601DateFormatter().string(from: now)) by OpenSwitch (build \(app.build), \(app.flavor))
 
-        This file was created on your Mac and has not been sent anywhere. Attach it to your issue at
-        https://github.com/aquitaine/OpenDisplay/issues if you are happy to share it.
+        This file was created on your Mac and has not been sent anywhere. Review the contents before sharing it.
 
         What is inside:
         \(contents.map { "  - \($0)" }.joined(separator: "\n"))
 
-        It does not contain window titles, file names, screen contents, or your location.
+        The bundle contains diagnostic information about this Mac and its displays.
         """
     }
 

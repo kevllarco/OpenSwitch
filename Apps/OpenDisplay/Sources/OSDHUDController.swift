@@ -19,7 +19,7 @@ final class OSDHUDController {
 
     init() {
         hosting = NSHostingView(rootView: OSDHUDView(content: OSDContent(kind: .brightness, value: 0),
-                                                     style: .native))
+                                                     style: .native, textSize: .regular))
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: true)
@@ -36,11 +36,12 @@ final class OSDHUDController {
 
     /// Show (or refresh) the HUD for `content` on the screen matching `cgDisplayID` (falling back to the
     /// main screen). `external` style draws nothing — the event is broadcast for a notch app instead.
-    func present(_ content: OSDContent, cgDisplayID: CGDirectDisplayID?, style: OSDStyle, position: OSDPosition) {
+    func present(_ content: OSDContent, cgDisplayID: CGDirectDisplayID?, style: OSDStyle,
+                 position: OSDPosition, textSize: OpenSwitchTextSize) {
         guard style != .external else { hide(animated: false); return }
 
-        hosting.rootView = OSDHUDView(content: content, style: style)
-        let size = OSDHUDView.size(for: style)
+        hosting.rootView = OSDHUDView(content: content, style: style, textSize: textSize)
+        let size = OSDHUDView.size(for: style, textSize: textSize)
         hosting.frame = NSRect(origin: .zero, size: size)
         panel.setContentSize(size)
         if let screen = screen(for: cgDisplayID) {
@@ -93,19 +94,31 @@ final class OSDHUDController {
 struct OSDHUDView: View {
     let content: OSDContent
     let style: OSDStyle
+    let textSize: OpenSwitchTextSize
 
-    static func size(for style: OSDStyle) -> NSSize {
+    static func size(for style: OSDStyle, textSize: OpenSwitchTextSize) -> NSSize {
+        let scale: CGFloat = switch textSize {
+        case .systemDefault: 1
+        case .regular: 1
+        case .large: 1.15
+        case .extraLarge: 1.3
+        case .largest: 1.5
+        }
         switch style {
-        case .minimal: return NSSize(width: 240, height: 48)
-        default: return NSSize(width: 200, height: 200)
+        case .minimal: return NSSize(width: 240 * scale, height: 48 * scale)
+        default: return NSSize(width: 200 * scale, height: 200 * scale)
         }
     }
 
     var body: some View {
-        switch style {
-        case .minimal: minimalBody
-        default: squareBody
+        Group {
+            switch style {
+            case .minimal: minimalBody
+            default: squareBody
+            }
         }
+        .appBodyFont()
+        .appTextSize(textSize)
     }
 
     private var squareBody: some View {
@@ -136,7 +149,9 @@ struct OSDHUDView: View {
     private func levelIndicator(segmentWidth: CGFloat, segmentHeight: CGFloat, segmentSpacing: CGFloat) -> some View {
         Group {
             if content.kind == .input {
-                Text(content.label ?? "").font(.system(size: 15, weight: .medium)).lineLimit(1)
+                Text(content.label ?? "")
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
             } else {
                 segments(width: segmentWidth, height: segmentHeight, spacing: segmentSpacing)
             }

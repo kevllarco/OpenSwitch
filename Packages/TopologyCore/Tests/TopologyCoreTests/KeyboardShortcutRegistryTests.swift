@@ -119,4 +119,71 @@ final class KeyboardShortcutRegistryTests: XCTestCase {
         reg.addInputSwitchBinding(entry)
         XCTAssertEqual(reg.mergedWithDefaults().inputSwitchBindings, [entry])
     }
+    func testExistingUSBCHotkeyDecodesWithStandardTransport() throws {
+        let json = #"{"bindings":{"reconnectAll":{"keyCode":15,"modifiers":6400}},"inputSwitchBindings":[{"id":"usb-c","displayID":{"rawValue":"cg:test"},"inputCode":27,"binding":{"keyCode":19,"modifiers":6400}}]}"#
+        let decoded = try JSONDecoder().decode(KeyboardShortcutRegistry.self, from: Data(json.utf8))
+        let entry = try XCTUnwrap(decoded.inputSwitchBindings.first)
+        XCTAssertEqual(entry.binding, digit2)
+        XCTAssertEqual(entry.inputCode, 0x1B)
+        XCTAssertNil(entry.transport)
+        XCTAssertEqual(entry.effectiveTransport, .standard)
+        XCTAssertEqual(try JSONDecoder().decode(KeyboardShortcutRegistry.self,
+                                              from: JSONEncoder().encode(decoded)), decoded)
+    }
+
+    func testLGAlternateTransportSurvivesSaveAndDefaultsMerge() throws {
+        let entry = InputSwitchBinding(id: "lg-usbc", displayID: deskMonitor,
+                                       inputCode: 0xD1, binding: digit2, transport: .lgAlternate)
+        let registry = KeyboardShortcutRegistry(inputSwitchBindings: [entry]).mergedWithDefaults()
+        let decoded = try JSONDecoder().decode(KeyboardShortcutRegistry.self,
+                                              from: JSONEncoder().encode(registry))
+        XCTAssertEqual(decoded.inputSwitchBindings, [entry])
+        XCTAssertEqual(decoded.inputSwitchBindings.first?.effectiveTransport.sourceAddress, 0x50)
+        XCTAssertEqual(decoded.inputSwitchBindings.first?.effectiveTransport.vcpCode, 0xF4)
+    }
+
+    func testPeripheralSettingsRoundTripAndLegacyDefaultsToMonitorOnly() throws {
+        let oldJSON = #"{"id":"old","displayID":{"rawValue":"cg:test"},"inputCode":27,"binding":{"keyCode":19,"modifiers":6400}}"#
+        let old = try JSONDecoder().decode(InputSwitchBinding.self, from: Data(oldJSON.utf8))
+        XCTAssertNil(old.peripherals)
+        let options = KVMPeripheralConfiguration(mode: .independent, mouseName: "mouse",
+                                                 keyboardName: "keyboard", mouseSlot: 2, keyboardSlot: 3)
+        let entry = InputSwitchBinding(displayID: deskMonitor, inputCode: 0xD2, binding: digit2,
+                                       transport: .lgAlternate, peripherals: options)
+        XCTAssertEqual(try JSONDecoder().decode(InputSwitchBinding.self, from: JSONEncoder().encode(entry)), entry)
+    }
+
+    func testDestinationNameRoundTripAndLegacyLabel() throws {
+        let legacy = InputSwitchBinding(displayID: deskMonitor, inputCode: 0xD2,
+                                       binding: digit2, transport: .lgAlternate)
+        XCTAssertEqual(legacy.destinationLabel, "USB-C (LG alt, 0xD2)")
+        var named = legacy
+        named.destinationName = "  MacBook  "
+        XCTAssertEqual(named.destinationLabel, "MacBook")
+        let decoded = try JSONDecoder().decode(InputSwitchBinding.self, from: JSONEncoder().encode(named))
+        XCTAssertEqual(decoded.destinationName, "  MacBook  ")
+        XCTAssertEqual(decoded.destinationLabel, "MacBook")
+        named.destinationName = "  "
+        XCTAssertEqual(named.destinationLabel, legacy.destinationLabel)
+    }
+
+    func testEditingDestinationKeepsMenuOrder() {
+        let first = InputSwitchBinding(id: "first", displayID: deskMonitor, inputCode: 0x11, binding: digit1)
+        let second = InputSwitchBinding(id: "second", displayID: deskMonitor, inputCode: 0x12, binding: digit2)
+        var registry = KeyboardShortcutRegistry(inputSwitchBindings: [first, second])
+        var edited = first
+        edited.destinationName = "Mac mini"
+        registry.addInputSwitchBinding(edited)
+        XCTAssertEqual(registry.inputSwitchBindings, [edited, second])
+    }
+
+    func testAvailabilityPeerIsOptionalAndRoundTrips() throws {
+        let data = Data(#"{"id":"old","displayID":{"rawValue":"cg:test"},"inputCode":27,"binding":{"keyCode":19,"modifiers":6400}}"#.utf8)
+        var entry = try JSONDecoder().decode(InputSwitchBinding.self, from: data)
+        XCTAssertNil(entry.availabilityPeerID)
+        entry.availabilityPeerID = "8BCE99FE-AF53-4E8F-BF73-F846DF1E1F79"
+        let decoded = try JSONDecoder().decode(InputSwitchBinding.self, from: JSONEncoder().encode(entry))
+        XCTAssertEqual(decoded.availabilityPeerID, entry.availabilityPeerID)
+    }
+
 }

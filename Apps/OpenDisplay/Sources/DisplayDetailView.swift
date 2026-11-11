@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import AutomationSchema
 import DisplayDomain
 import OpenDisplayDesignSystem
@@ -6,7 +7,7 @@ import SwiftUI
 import TopologyCore
 
 /// The per-display detail pane (Settings → Displays). This is where everything that used to crowd the
-/// menu-bar card now lives: resolution & refresh, appearance (rotation/colour), hardware controls,
+/// menu-bar card now lives: resolution & refresh, appearance (colour), hardware controls,
 /// input, "use as", identity, and read-only info — grouped into System-Settings-style cards. The menu
 /// bar deep-links here via "Display settings…". See `Docs/InterfaceRedesign.md`.
 struct DisplayDetailView: View {
@@ -30,16 +31,13 @@ struct DisplayDetailView: View {
                         }
                     }
                 }
+                DisplayKeyAndBrightnessOptions()
                 ResolutionCard(display: display)
                 AppearanceCard(display: display)
                 if display.displayClass != .builtIn { ControlsCard(display: display) }
                 DimmingCard(display: display)
-                UseAsCard(display: display)
                 IdentityCard(display: display)
                 InformationCard(display: display)
-                // Display-agnostic, but the Displays tab is where it belongs (Issue #39) and this is
-                // the tab's only scrolling surface.
-                DisplayGroupsCard()
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -61,6 +59,71 @@ struct DisplayDetailView: View {
     }
 }
 
+/// The two display automations retained in OpenSwitch settings.
+private struct DisplayKeyAndBrightnessOptions: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ODCard(title: "Display behavior", padded: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                #if !PUBLIC_API_ONLY
+                HStack {
+                    Text("Match external brightness to the built-in display")
+                    Spacer(minLength: 12)
+                    Toggle("Match external brightness to the built-in display", isOn: Binding(
+                        get: { model.settings.adaptiveBrightnessSyncEnabled },
+                        set: { model.setAdaptiveBrightnessSyncEnabled($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                #endif
+                HStack {
+                    Text("Use keyboard brightness and volume keys")
+                    Spacer(minLength: 12)
+                    Toggle("Use keyboard brightness and volume keys", isOn: Binding(
+                        get: { model.settings.mediaKeyInterceptionEnabled },
+                        set: { model.setMediaKeyInterceptionEnabled($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                HStack {
+                    Text("Keep displays awake while an external display is connected")
+                    Spacer(minLength: 12)
+                    Toggle("Keep displays awake while an external display is connected", isOn: Binding(
+                        get: { model.settings.preventDisplaySleepWithExternal },
+                        set: { model.setPreventDisplaySleepWithExternal($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                HStack {
+                    Text("Notify when displays connect or disconnect")
+                    Spacer(minLength: 12)
+                    Toggle("Notify when displays connect or disconnect", isOn: Binding(
+                        get: { model.settings.displayNotificationsEnabled },
+                        set: { model.setDisplayNotificationsEnabled($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                if model.settings.mediaKeyInterceptionEnabled {
+                    Picker("Brightness keys control", selection: Binding(
+                        get: { model.settings.mediaKeyTargetMode },
+                        set: { model.setMediaKeyTargetMode($0) })) {
+                        Text("Display under the pointer").tag(MediaKeyTargetMode.underCursor)
+                        Text("Main display").tag(MediaKeyTargetMode.mainDisplay)
+                        Text("Built-in display").tag(MediaKeyTargetMode.builtInAlways)
+                    }
+                    if !MediaKeyTap.isAccessibilityTrusted {
+                        Text("Allow Accessibility access to use the keyboard keys.")
+                            .appBodyFont().foregroundStyle(.secondary)
+                        Button("Open Accessibility Settings…") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 // MARK: - Resolution
 
 private struct ResolutionCard: View {
@@ -71,20 +134,8 @@ private struct ResolutionCard: View {
     /// enumerations on every body evaluation. Filters use the *current* display.mode, so they stay
     /// correct across resolution switches without re-enumerating.
     @State private var allModes: [DisplayMode] = []
-    /// Live slider position (index into `resolutions`). Applied on release (commit-on-release, per the
-    /// safety note on Issue 2/#6) and re-synced to the current mode whenever the user isn't dragging.
-    @State private var resolutionIndex: Double = 0
-    @State private var draggingResolution = false
-
-    /// One area-sorted stop per point-size (HiDPI preferred, then highest refresh). Shared, tested
-    /// logic so the slider's index discipline stays monotonic (`ResolutionStops`).
+    /// One area-sorted choice per point-size (HiDPI preferred, then highest refresh).
     private var resolutions: [DisplayMode] { ResolutionStops.areaSorted(from: allModes) }
-
-    /// The resolution stop the slider currently points at (the active stop).
-    private var selectedResolution: DisplayMode? {
-        let idx = Int(resolutionIndex.rounded())
-        return resolutions.indices.contains(idx) ? resolutions[idx] : nil
-    }
 
     /// Refresh rates at the current resolution (same point-size + HiDPI), descending.
     private var rates: [Double] {
@@ -107,61 +158,36 @@ private struct ResolutionCard: View {
                footnote: "Scaled resolutions use HiDPI (Retina) rendering for crisper text.") {
             ODRow("Resolution") {
                 if resolutions.count > 1 {
-                    HStack(spacing: 8) {
-                        Slider(
-                            value: $resolutionIndex,
-                            in: 0...Double(resolutions.count - 1),
-                            step: 1,
-                            onEditingChanged: { editing in
-                                draggingResolution = editing
-                                if !editing { applySelectedResolution() }
-                            }
-                        )
-                        .frame(width: 150)
-                        Text(resolutionLabel)
-                            .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                            .frame(width: 96, alignment: .trailing)
+                    Picker("Resolution", selection: Binding(
+                        get: { display.mode.map(resolutionKey) ?? "" },
+                        set: { selected in
+                            guard let mode = resolutions.first(where: { resolutionKey($0) == selected }),
+                                  !isCurrentResolution(mode) else { return }
+                            Task { await model.setMode(mode, for: display) }
+                        })) {
+                        if display.mode == nil { Text("—").tag("") }
+                        ForEach(resolutions, id: \.self) { mode in
+                            Text("\(mode.pointWidth) × \(mode.pointHeight)").tag(resolutionKey(mode))
+                        }
                     }
+                    .labelsHidden().pickerStyle(.menu).fixedSize().disabled(model.busy)
                 } else {
                     // Single-mode display: no dead control, just the current resolution.
                     Text(display.mode.map { "\($0.pointWidth) × \($0.pointHeight)" } ?? "—")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
-            if resolutions.count > 1, let mode = display.mode {
-                // Favourite resolutions (Batch-2 #3): star the current mode + quick-recall the rest.
-                ODDivider()
-                ODRow("Favorites") {
-                    HStack(spacing: 6) {
-                        Button {
-                            model.toggleFavoriteResolution(mode, for: display)
-                        } label: {
-                            let on = model.isFavoriteResolution(mode, for: display)
-                            Image(systemName: on ? "star.fill" : "star")
-                                .foregroundStyle(on ? AnyShapeStyle(.yellow) : AnyShapeStyle(.secondary))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Pin the current resolution as a favourite")
-                        ForEach(model.favoriteResolutions(among: resolutions, for: display), id: \.self) { fav in
-                            if fav != mode {
-                                Button("\(fav.pointWidth)×\(fav.pointHeight)") {
-                                    Task { await model.setMode(fav, for: display) }
-                                }
-                                .buttonStyle(.bordered).controlSize(.small)
-                            }
-                        }
-                    }
+                        .appBodyFont().foregroundStyle(.secondary)
                 }
             }
             if rates.count > 1, let mode = display.mode {
                 ODDivider()
                 ODRow("Refresh rate") {
-                    Menu("\(Int(mode.refreshHz.rounded())) Hz") {
-                        ForEach(rates, id: \.self) { hz in
-                            Button("\(Int(hz.rounded())) Hz") { Task { await model.setRefresh(hz, for: display) } }
+                Picker("Refresh rate", selection: Binding(
+                    get: { rates.first(where: { abs($0 - mode.refreshHz) < 0.11 }) ?? mode.refreshHz },
+                    set: { newValue, _ in Task { await model.setRefresh(newValue, for: display) } })) {
+                    ForEach(rates, id: \.self) { hz in
+                        Text("\(Int(hz.rounded())) Hz").tag(hz)
                         }
                     }
-                    .menuStyle(.borderlessButton).fixedSize()
+                .labelsHidden().pickerStyle(.menu).fixedSize()
                 }
             }
             if hiDPIAvailable, let mode = display.mode {
@@ -175,40 +201,20 @@ private struct ResolutionCard: View {
         }
         .task(id: display.recordID) {
             allModes = model.allModes(for: display)
-            syncResolutionIndex()
         }
-        .onChange(of: display.mode) { _, _ in syncResolutionIndex() }
     }
 
-    /// Label for the slider's active stop — the resolution it points at, with a HiDPI hint when that
-    /// stop is a Retina mode.
-    private var resolutionLabel: String {
-        guard let mode = selectedResolution ?? display.mode else { return "—" }
-        return "\(mode.pointWidth) × \(mode.pointHeight)"
+    private func resolutionKey(_ mode: DisplayMode) -> String {
+        "\(mode.pointWidth)x\(mode.pointHeight)"
     }
 
-    /// Applies the resolution under the slider thumb (called on drag-release, not continuously, so a
-    /// drag doesn't slam the panel through every intermediate mode). No-op if it's already current.
-    private func applySelectedResolution() {
-        let idx = Int(resolutionIndex.rounded())
-        guard resolutions.indices.contains(idx) else { return }
-        let target = resolutions[idx]
-        if let current = display.mode,
-           current.pointWidth == target.pointWidth, current.pointHeight == target.pointHeight {
-            return
-        }
-        Task { await model.setMode(target, for: display) }
-    }
-
-    /// Re-aligns the slider position to the display's current mode, unless the user is mid-drag.
-    private func syncResolutionIndex() {
-        guard !draggingResolution, let mode = display.mode,
-              let idx = ResolutionStops.index(of: mode, in: resolutions) else { return }
-        resolutionIndex = Double(idx)
+    private func isCurrentResolution(_ mode: DisplayMode) -> Bool {
+        guard let current = display.mode else { return false }
+        return current.pointWidth == mode.pointWidth && current.pointHeight == mode.pointHeight
     }
 }
 
-// MARK: - Appearance (rotation + colour)
+// MARK: - Appearance
 
 private struct AppearanceCard: View {
     @EnvironmentObject private var model: AppModel
@@ -227,32 +233,17 @@ private struct AppearanceCard: View {
         ODCard(title: "Appearance") {
             ODRow("Colour temperature") {
                 HStack(spacing: 8) {
-                    Image(systemName: "thermometer.sun").font(.system(size: 11)).foregroundStyle(.orange)
+                    Image(systemName: "thermometer.sun").font(.body).foregroundStyle(.orange)
                     Slider(value: Binding(get: { Double(temperature) },
                                           set: { model.setColorTemperature(Float($0), for: display) }),
                            in: Double(ColorTemperatureCurve.minKelvin)...Double(ColorTemperatureCurve.maxKelvin))
                         .frame(width: 140)
-                    Image(systemName: "thermometer.snowflake").font(.system(size: 11)).foregroundStyle(.cyan)
+                    Image(systemName: "thermometer.snowflake").font(.body).foregroundStyle(.cyan)
                     Text(model.colorTemperature[display.recordID] == nil
                          ? "Native" : "\(Int(temperature)) K")
-                        .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                        .frame(width: 48, alignment: .trailing)
-                }
-            }
-            ODDivider()
-            ODRow("Rotation") {
-                if model.rotationWritable {
-                    HStack(spacing: 6) {
-                        ODBadge("Experimental", tone: .orange)
-                        Menu("\(model.currentRotation(for: display))°") {
-                            ForEach([0, 90, 180, 270], id: \.self) { deg in
-                                Button("\(deg)°") { Task { await model.setRotation(deg, for: display) } }
-                            }
-                        }
-                        .menuStyle(.borderlessButton).fixedSize().disabled(model.busy)
-                    }
-                } else {
-                    Text("\(model.currentRotation(for: display))°").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .appBodyFont().monospacedDigit().foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(minWidth: 76, alignment: .trailing)
                 }
             }
             if display.displayClass != .builtIn {
@@ -265,25 +256,28 @@ private struct AppearanceCard: View {
                     // the 1...max fallback path.
                     let codes = model.colorPresetCodes(for: display)
                     HStack(spacing: 8) {
+                        if codes.isEmpty {
+                            Text(model.colorPreset[display.recordID].map { model.presetName($0) } ?? "—")
+                                .appBodyFont().foregroundStyle(.secondary)
+                        } else {
+                            Picker("Colour mode", selection: Binding(
+                                get: { model.colorPreset[display.recordID] },
+                                set: { if let code = $0 { model.setColorPreset(code, for: display) } })) {
+                                if let selected = model.colorPreset[display.recordID], !codes.contains(selected) {
+                                    Text(model.presetName(selected)).tag(Optional(selected))
+                                }
+                                ForEach(codes, id: \.self) { code in
+                                    Text(model.presetName(code)).tag(Optional(code))
+                                }
+                            }
+                            .labelsHidden().pickerStyle(.menu).fixedSize()
+                        }
                         #if !PUBLIC_API_ONLY
                         if model.ddcCapabilities[display.recordID] == nil {
                             Button(detectingModes ? "Detecting…" : "Detect…") { detectModes() }
-                                .buttonStyle(.link).controlSize(.small)
                                 .disabled(detectingModes)
-                                .help("Ask the monitor which colour modes it supports")
                         }
                         #endif
-                        if codes.isEmpty {
-                            Text(model.colorPreset[display.recordID].map { model.presetName($0) } ?? "—")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        } else {
-                            Menu(model.colorPreset[display.recordID].map { model.presetName($0) } ?? "—") {
-                                ForEach(codes, id: \.self) { code in
-                                    Button(model.presetName(code)) { model.setColorPreset(code, for: display) }
-                                }
-                            }
-                            .menuStyle(.borderlessButton).fixedSize()
-                        }
                     }
                 }
                 if model.ddcWriteWasIgnored(0x14, for: display), let current = model.colorPreset[display.recordID] {
@@ -301,27 +295,37 @@ private struct AppearanceCard: View {
             ODDivider()
             ODRow("Colour profile") {
                 if model.colorProfileControllable[display.recordID] == true {
-                    Menu(model.colorProfileName[display.recordID] ?? "—") {
-                        Button("Factory Default") { Task { await model.resetColorProfile(for: display) } }
-                        Divider()
-                        ForEach(model.availableColorProfilesCache) { profile in
-                            Button(profile.name) { Task { await model.setColorProfile(profile, for: display) } }
+                    let profiles = model.availableColorProfilesCache
+                    let currentName = model.colorProfileName[display.recordID]
+                    let currentID = profiles.first(where: { $0.name == currentName })?.id
+                    Picker("Colour profile", selection: Binding(
+                        get: { currentID ?? (currentName == nil || currentName == "Factory Default" ? "" : "__current__") },
+                        set: { selected in
+                            if selected.isEmpty {
+                                Task { await model.resetColorProfile(for: display) }
+                            } else if let profile = profiles.first(where: { $0.id == selected }) {
+                                Task { await model.setColorProfile(profile, for: display) }
+                            }
+                        })) {
+                        Text("Factory Default").tag("")
+                        if let currentName, currentID == nil, currentName != "Factory Default" {
+                            Text(currentName).tag("__current__")
+                        }
+                        ForEach(profiles) { profile in
+                            Text(profile.name).tag(profile.id)
                         }
                     }
-                    .menuStyle(.borderlessButton).fixedSize()
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
                 } else {
-                    Text("Unavailable").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Text("Unavailable").appBodyFont().foregroundStyle(.secondary)
                 }
             }
-        }
-        if let reason = model.rotationUnavailableReason {
-            Text(reason).font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 10)
         }
     }
 
     private func secondaryNote(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .appBodyFont().foregroundStyle(.secondary)
             .padding(.horizontal, 10).padding(.bottom, 4)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -374,7 +378,7 @@ private struct ControlsCard: View {
                 // often just stuck (a state that survives display sleep; only its own power button
                 // clears it). Say so, or "unsupported" reads as a dead feature the user can't act on.
                 Text("If this monitor supported hardware control before, its DDC channel may be stuck — try turning the monitor off and on with its own power button, then reopen this pane.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .appBodyFont().foregroundStyle(.secondary)
                     .padding(.horizontal, 10).padding(.bottom, 6)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -388,43 +392,45 @@ private struct ControlsCard: View {
                     if model.ddcWriteWasIgnored(control.vcp, for: display) { ignoredCaption(Self.ignoredNote) }
                 }
             }
-            if let caption = model.groupSyncCaption(for: display) {
-                ODDivider()
-                Text(caption)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-            }
             #if !PUBLIC_API_ONLY
             if let status = model.adaptiveStatusLine(for: display) {
                 ODDivider()
                 Text(status)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .appBodyFont().foregroundStyle(.secondary)
                     .padding(.horizontal, 10).padding(.vertical, 4)
             }
             #endif
             ODDivider()
             ODRow("Input source") {
-                Menu(model.inputSource[display.recordID].map { model.inputName($0) } ?? "—") {
+                Picker("Input source", selection: Binding(
+                    get: { model.inputSource[display.recordID] },
+                    set: { if let code = $0 { model.setInputSource(code, for: display) } })) {
+                    if model.inputSource[display.recordID] == nil {
+                        Text("—").tag(Optional<Int>.none)
+                    }
                     ForEach(AppModel.standardInputs, id: \.code) { input in
-                        Button(input.name) { model.setInputSource(input.code, for: display) }
+                        Text(input.name).tag(Optional(input.code))
                     }
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .labelsHidden().pickerStyle(.menu).fixedSize()
             }
             ODDivider()
             ODRow("Power", secondary: "Some displays can't wake over DDC once off") {
-                Menu("Set…") {
+                Menu("Set power…") {
                     ForEach(DDCPowerMode.allCases, id: \.self) { mode in
                         Button(mode.label) { model.setPowerMode(mode, for: display) }
                     }
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .menuStyle(.borderedButton).controlSize(.regular)
+                .frame(minWidth: 132, alignment: .trailing)
             }
             #if !PUBLIC_API_ONLY
             ODDivider()
             ODRow("Reset to defaults", secondary: "Restores the monitor's factory settings") {
                 Button(resetting ? "Resetting…" : "Reset to defaults…") { confirmingReset = true }
-                    .controlSize(.small)
+                    .controlSize(.regular)
+                    .appBodyFont()
+                    .frame(minWidth: 164)
                     .disabled(resetting)
             }
             #endif
@@ -441,14 +447,14 @@ private struct ControlsCard: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The monitor restores its factory settings — brightness, contrast, colour mode, and "
-                 + "anything else it resets. OpenDisplay also clears its software dimming and colour "
+                 + "anything else it resets. OpenSwitch also clears its software dimming and colour "
                  + "temperature for this display.")
         }
     }
 
     private func ignoredCaption(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .appBodyFont().foregroundStyle(.secondary)
             .padding(.horizontal, 10).padding(.bottom, 4)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -458,8 +464,9 @@ private struct ControlsCard: View {
             Slider(value: Binding(get: { Double(level) }, set: { set(Float($0)) }), in: 0...1)
                 .frame(width: 160)
             Text("\(Int((level * 100).rounded()))%")
-                .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
+                .appBodyFont().monospacedDigit().foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 58, alignment: .trailing)
         }
     }
 }
@@ -498,8 +505,9 @@ private struct DimmingCard: View {
                                           set: { model.setSoftwareDim(Float($0), for: display) }), in: range)
                         .frame(width: 160)
                     Text("\(Int(((model.softwareDim[display.recordID] ?? 1) * 100).rounded()))%")
-                        .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
-                        .frame(width: 34, alignment: .trailing)
+                        .appBodyFont().monospacedDigit().foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(minWidth: 58, alignment: .trailing)
                 }
             }
             ODRow("Method") {
@@ -516,56 +524,69 @@ private struct DimmingCard: View {
     }
 }
 
-// MARK: - Use as
-
-private struct UseAsCard: View {
-    @EnvironmentObject private var model: AppModel
-    let display: DisplayObservation
-
-    var body: some View {
-        ODCard(title: "Use as") {
-            ODRow("Use as main display", secondary: "Menu bar and Dock appear here") {
-                Toggle("", isOn: Binding(get: { display.isMain },
-                                         set: { on in if on { Task { await model.setMain(for: display) } } }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                    .disabled(display.isMain || model.busy)
-            }
-            if !display.isMain {
-                ODDivider()
-                ODRow("Mirror to main display") {
-                    Toggle("", isOn: Binding(get: { display.isMirrored },
-                                             set: { on in Task { await model.setMirrored(on, for: display) } }))
-                        .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(model.busy)
-                }
-            }
-            ODDivider()
-            ODRow("Turn display off", secondary: "Logical disconnect — reconnectable") {
-                Button("Turn Off", role: .destructive) {
-                    Task { await model.setDisplayActive(false, for: display) }
-                }
-                .controlSize(.small)
-                .disabled(model.busy || model.activeDisplayCount <= 1)
-            }
-        }
-    }
-}
-
 // MARK: - Identity (rename)
 
 private struct IdentityCard: View {
     @EnvironmentObject private var model: AppModel
     let display: DisplayObservation
     @State private var alias = ""
+    @State private var showingNameEditor = false
+
+    private var displayName: String {
+        alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? model.displayName(for: display)
+            : alias
+    }
 
     var body: some View {
         ODCard(title: "Name") {
             ODRow("Display name") {
-                TextField(model.displayName(for: display), text: $alias)
-                    .textFieldStyle(.roundedBorder).frame(width: 200)
-                    .onSubmit { Task { await model.setAlias(alias, for: display) } }
+                HStack(spacing: 8) {
+                    Text(displayName)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    Button("Edit") { showingNameEditor = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showingNameEditor) {
+            DisplayNameEditorSheet(currentName: displayName) { updatedName in
+                alias = updatedName
+                Task { await model.setAlias(updatedName, for: display) }
             }
         }
         .onAppear { alias = model.records[display.recordID]?.alias ?? "" }
+    }
+}
+
+private struct DisplayNameEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onSave: (String) -> Void
+    @State private var draft: String
+
+    init(currentName: String, onSave: @escaping (String) -> Void) {
+        self.onSave = onSave
+        _draft = State(initialValue: currentName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Display name").font(.title3.weight(.semibold))
+            TextField("Display name", text: $draft)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Save") {
+                    onSave(draft.trimmingCharacters(in: .whitespacesAndNewlines))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+        .appBodyFont()
     }
 }
 
@@ -581,7 +602,7 @@ private struct InformationCard: View {
             ForEach(Array(info.enumerated()), id: \.element.label) { index, item in
                 if index > 0 { ODDivider() }
                 ODRow(item.label) {
-                    Text(item.value).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(item.value).appBodyFont().foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }

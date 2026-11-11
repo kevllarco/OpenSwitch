@@ -60,14 +60,30 @@ public struct InputSwitchBinding: Hashable, Sendable, Codable, Identifiable {
     /// transient port/CG id), so the binding still finds the right panel after a reconnect or a
     /// dock re-plug that reorders ports.
     public var displayID: DisplayRecordID
-    /// The DDC/CI input-source code (VCP 0x60) to switch to, e.g. 0x11 for HDMI 1.
+    /// The input value for the selected transport, e.g. standard 0x11 or LG alternate 0x90 for HDMI 1.
     public var inputCode: Int
+    /// Absent in existing settings; nil preserves the standard VCP 0x60 / source 0x51 behavior.
+    public var transport: DDCInputTransport?
+    public var effectiveTransport: DDCInputTransport { transport ?? .standard }
     public var binding: KeyBinding
+    public var peripherals: KVMPeripheralConfiguration?
+    /// Optional user-facing destination name; older bindings retain their input label.
+    public var destinationName: String?
+    /// Optional paired Desk Switch identity. Nil preserves offline-only legacy behavior.
+    public var availabilityPeerID: String?
+    public var destinationLabel: String {
+        let name = destinationName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? effectiveTransport.inputName(inputCode) : name
+    }
 
-    public init(id: String = UUID().uuidString, displayID: DisplayRecordID, inputCode: Int, binding: KeyBinding) {
+    public init(id: String = UUID().uuidString, displayID: DisplayRecordID, inputCode: Int, binding: KeyBinding, transport: DDCInputTransport? = nil, peripherals: KVMPeripheralConfiguration? = nil, destinationName: String? = nil, availabilityPeerID: String? = nil) {
         self.id = id
         self.displayID = displayID
         self.inputCode = inputCode
+        self.transport = transport
+        self.peripherals = peripherals
+        self.destinationName = destinationName
+        self.availabilityPeerID = availabilityPeerID
         self.binding = binding
     }
 }
@@ -121,8 +137,15 @@ public struct KeyboardShortcutRegistry: Hashable, Sendable, Codable {
 
     /// Adds a new input-switch binding, or replaces the existing one sharing its id.
     public mutating func addInputSwitchBinding(_ entry: InputSwitchBinding) {
-        inputSwitchBindings.removeAll { $0.id == entry.id }
-        inputSwitchBindings.append(entry)
+        if let index = inputSwitchBindings.firstIndex(where: { $0.id == entry.id }) {
+            inputSwitchBindings[index] = entry
+            // Retain one copy even if an older/corrupt settings file contained duplicate IDs.
+            inputSwitchBindings = inputSwitchBindings.enumerated().compactMap { offset, binding in
+                offset == index || binding.id != entry.id ? binding : nil
+            }
+        } else {
+            inputSwitchBindings.append(entry)
+        }
     }
 
     /// Removes the input-switch binding with `id`, if any.

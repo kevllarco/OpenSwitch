@@ -1,6 +1,52 @@
 import DisplayDomain
 import Foundation
 
+/// Optional text displayed beside the OpenSwitch menu-bar symbol.
+public enum MenuBarComputerLabel: String, Codable, Hashable, Sendable, CaseIterable {
+    case iconOnly
+    case computerNumber
+    case computerName
+
+    public var title: String {
+        switch self {
+        case .iconOnly: return "Icon only"
+        case .computerNumber: return "Icon + computer #"
+        case .computerName: return "Icon + computer name"
+        }
+    }
+}
+
+/// App-wide text size preference for OpenSwitch.
+public enum OpenSwitchTextSize: String, Codable, Hashable, Sendable, CaseIterable {
+    case systemDefault
+    case regular
+    case large
+    case extraLarge
+    case largest
+
+    public var title: String {
+        switch self {
+        case .systemDefault: return "System Default"
+        case .regular: return "Regular"
+        case .large: return "Large"
+        case .extraLarge: return "Extra Large"
+        case .largest: return "Largest"
+        }
+    }
+
+    /// Explicit point sizes are used on macOS, where semantic SwiftUI text styles do not
+    /// consistently respond to Dynamic Type changes in a desktop window.
+    public var appPointSize: CGFloat? {
+        switch self {
+        case .systemDefault: return nil
+        case .regular: return 13
+        case .large: return 16
+        case .extraLarge: return 19
+        case .largest: return 22
+        }
+    }
+}
+
 /// User-tunable app settings persisted as JSON (PRD §10.8 SettingsStore). Kept small, Codable, and
 /// versioned-by-tolerance: unknown keys are ignored and missing keys fall back to the defaults, so
 /// older/newer settings files load without error.
@@ -109,6 +155,10 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
     public var appPresetsEnabled: Bool
     /// The configured per-app presets (at most one per bundle identifier).
     public var appPresets: [AppPresetPolicy.AppPreset]
+    /// What text, if any, appears beside the menu-bar icon.
+    public var menuBarComputerLabel: MenuBarComputerLabel
+    /// Minimum readable text size used throughout OpenSwitch.
+    public var openSwitchTextSize: OpenSwitchTextSize
     /// App-preset restore ledger, keyed by `DisplayRecordID.rawValue`: each governed display's
     /// brightness/contrast/colour-preset at the moment its app preset took over. INVARIANT: a key is
     /// present if and only if an app preset is currently applied to that display and a restore is
@@ -184,6 +234,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         dimmingMethod: DimmingMethod = .gamma,
         appPresetsEnabled: Bool = false,
         appPresets: [AppPresetPolicy.AppPreset] = [],
+        menuBarComputerLabel: MenuBarComputerLabel = .iconOnly,
+        openSwitchTextSize: OpenSwitchTextSize = .systemDefault,
         appPresetPriorStateByDisplay: [String: AppPresetPolicy.PriorState] = [:],
         xdrBrightnessEnabled: Bool = false,
         xdrDisableOnBattery: Bool = false,
@@ -229,6 +281,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         self.dimmingMethod = dimmingMethod
         self.appPresetsEnabled = appPresetsEnabled
         self.appPresets = appPresets
+        self.menuBarComputerLabel = menuBarComputerLabel
+        self.openSwitchTextSize = openSwitchTextSize
         self.appPresetPriorStateByDisplay = appPresetPriorStateByDisplay
         self.xdrBrightnessEnabled = xdrBrightnessEnabled
         self.xdrDisableOnBattery = xdrDisableOnBattery
@@ -276,6 +330,8 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
         case dimmingMethod
         case appPresetsEnabled
         case appPresets
+        case menuBarComputerLabel
+        case openSwitchTextSize
         case appPresetPriorStateByDisplay
         case xdrBrightnessEnabled
         case xdrDisableOnBattery
@@ -365,6 +421,10 @@ public struct OpenDisplaySettings: Hashable, Sendable, Codable {
             ?? defaults.appPresetsEnabled
         appPresets = container.lenient([AppPresetPolicy.AppPreset].self, forKey: .appPresets)
             ?? defaults.appPresets
+        menuBarComputerLabel = container.lenient(MenuBarComputerLabel.self, forKey: .menuBarComputerLabel)
+            ?? defaults.menuBarComputerLabel
+        openSwitchTextSize = container.lenient(OpenSwitchTextSize.self, forKey: .openSwitchTextSize)
+            ?? defaults.openSwitchTextSize
         appPresetPriorStateByDisplay = container.lenient([String: AppPresetPolicy.PriorState].self,
                              forKey: .appPresetPriorStateByDisplay)
             ?? defaults.appPresetPriorStateByDisplay

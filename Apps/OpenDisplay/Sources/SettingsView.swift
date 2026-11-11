@@ -6,305 +6,280 @@ import OpenDisplayDesignSystem
 import SwiftUI
 import TopologyCore
 
-/// Settings window. A sidebar (Displays · Arrange · Scenes · Health & Recovery · About) replaces the
-/// old 3-tab shell: "Displays" is now a selection list feeding a per-display detail pane (so the
-/// topology isn't duplicated with the menu bar), "Arrange" is promoted out of Scenes into its own
-/// item, and diagnostics/recovery/Labs are unified under "Health & Recovery". "About" sits directly
-/// below Health & Recovery and mirrors the standalone About window (`AboutView`) as an inline card.
-/// See `Docs/InterfaceRedesign.md`.
+/// Settings for computer switching, appearance, troubleshooting, and app information.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var section: SettingsSection? = .displays
+    @State private var section: SettingsSection? = .computers
+    @State private var searchText = ""
+
+    private var visibleSections: [SettingsSection] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return SettingsSection.allCases }
+        return SettingsSection.allCases.filter {
+            $0.title.localizedCaseInsensitiveContains(query)
+                || $0.searchTerms.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsSection.allCases, selection: $section) { item in
-                Label(item.title, systemImage: item.icon).tag(item)
+            List(selection: $section) {
+                ForEach(visibleSections) { item in
+                    let pointSize = model.settings.openSwitchTextSize.appPointSize ?? 13
+                    HStack(spacing: 8) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: max(16, pointSize)))
+                        Text(item.title)
+                            .font(.system(size: pointSize, weight: .regular))
+                            .lineLimit(1)
+                    }
+                    .padding(.vertical, max(3, pointSize * 0.25))
+                    .tag(item)
+                }
+                if visibleSections.isEmpty {
+                    Text("No settings found")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                }
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 220)
+            .listStyle(.sidebar)
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search settings")
+            .searchSuggestions {
+                ForEach(SettingsSearchTarget.matches(searchText), id: \.title) { target in
+                    Button {
+                        section = target.section
+                        searchText = ""
+                    } label: {
+                        Label(target.title, systemImage: target.icon)
+                    }
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
-            switch section ?? .displays {
+            switch section ?? .computers {
+            case .computers: ComputersSection()
             case .displays: DisplaysSection()
-            case .arrange: ArrangeSection()
-            case .scenes: ScenesSection()
-            case .health: HealthSection()
+            case .appearance: AppearanceSection()
+            case .troubleshooting: TroubleshootingSection()
             case .about: AboutSection()
             }
         }
-        .frame(minWidth: 720, idealWidth: 720, minHeight: 480, idealHeight: 520)
-        .task {
-            await model.refreshDiagnostics()
-            await model.refreshActivity()
-        }
-        // Deep-link from the menu bar's "Display settings…": jump to the Displays section so the
-        // selected display is shown even if Settings was already open on another section.
-        .onChange(of: model.selectedDisplayID) { _, newValue in
-            if newValue != nil { section = .displays }
-        }
+        .frame(minWidth: 800, idealWidth: 860, minHeight: 560, idealHeight: 620)
+        .appBodyFont()
+        .appTextSize(model.settings.openSwitchTextSize)
+        .navigationSplitViewStyle(.balanced)
     }
 }
 
-enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
-    case displays, arrange, scenes, health, about
+private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+    case computers, displays, appearance, troubleshooting, about
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .computers: return "Computers"
         case .displays: return "Displays"
-        case .arrange: return "Arrange"
-        case .scenes: return "Scenes"
-        case .health: return "Health & Recovery"
+        case .appearance: return "Appearance"
+        case .troubleshooting: return "Troubleshooting"
         case .about: return "About"
+        }
+    }
+    var searchTerms: String {
+        switch self {
+        case .computers: "Keyboard mouse shortcut nearby Mac pairing computer switch"
+        case .displays: "Brightness contrast volume sharpness red green blue gain resolution refresh Retina colour color temperature mode profile input source power dimming name monitor"
+        case .appearance: "Startup launch at login Text size font menu bar label HUD heads up display position style"
+        case .troubleshooting: "Status diagnostics export reconnect recovery"
+        case .about: "Version updates software update license"
         }
     }
     var icon: String {
         switch self {
+        case .computers: return "desktopcomputer"
         case .displays: return "display"
-        case .arrange: return "rectangle.3.group"
-        case .scenes: return "square.stack.3d.up"
-        case .health: return "stethoscope"
+        case .appearance: return "paintbrush"
+        case .troubleshooting: return "wrench.and.screwdriver"
         case .about: return "info.circle"
         }
     }
 }
 
-// MARK: - Displays (selection list → detail pane)
+private struct SettingsSearchTarget {
+    let title: String
+    let icon: String
+    let section: SettingsSection
+
+    static func matches(_ query: String) -> [Self] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return [] }
+        return all.filter { $0.title.localizedCaseInsensitiveContains(value) }
+    }
+
+    private static let all: [Self] = [
+        .init(title: "Computers", icon: "desktopcomputer", section: .computers),
+        .init(title: "Keyboard and mouse", icon: "keyboard", section: .computers),
+        .init(title: "Shortcut", icon: "command", section: .computers),
+        .init(title: "Startup", icon: "power", section: .appearance),
+        .init(title: "Brightness", icon: "sun.max", section: .displays),
+        .init(title: "Contrast", icon: "circle.lefthalf.filled", section: .displays),
+        .init(title: "Volume", icon: "speaker.wave.2", section: .displays),
+        .init(title: "Resolution", icon: "rectangle.dashed", section: .displays),
+        .init(title: "Refresh rate", icon: "arrow.triangle.2.circlepath", section: .displays),
+        .init(title: "Colour temperature", icon: "thermometer.sun", section: .displays),
+        .init(title: "Colour mode and profile", icon: "paintpalette", section: .displays),
+        .init(title: "Input source", icon: "arrow.left.arrow.right", section: .displays),
+        .init(title: "Power", icon: "power", section: .displays),
+        .init(title: "Software dimming", icon: "sun.min", section: .displays),
+        .init(title: "Display name", icon: "textformat", section: .displays),
+        .init(title: "Text size", icon: "textformat.size", section: .appearance),
+        .init(title: "Menu bar", icon: "menubar.rectangle", section: .appearance),
+        .init(title: "Switching HUD", icon: "rectangle.inset.filled", section: .appearance),
+        .init(title: "Diagnostics", icon: "stethoscope", section: .troubleshooting),
+        .init(title: "App updates", icon: "arrow.down.circle", section: .about),
+    ]
+}
+
+private struct AppearanceSection: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Form {
+            Section("Text size") {
+                Picker("App text size", selection: Binding(
+                    get: { model.settings.openSwitchTextSize },
+                    set: { model.setOpenSwitchTextSize($0) }
+                )) {
+                    ForEach(OpenSwitchTextSize.allCases, id: \.self) { size in
+                        Text(size.title).tag(size)
+                    }
+                }
+            }
+            Section("Startup") {
+                LaunchAtLoginToggle()
+            }
+            Section("Menu bar") {
+                Picker("Show active computer", selection: Binding(
+                    get: { model.settings.menuBarComputerLabel },
+                    set: { model.setMenuBarComputerLabel($0) }
+                )) {
+                    ForEach(MenuBarComputerLabel.allCases, id: \.self) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+            }
+            Section("Switching HUD") {
+                Toggle("Show when switching", isOn: Binding(
+                    get: { model.settings.osdEnabled }, set: { model.setOSDEnabled($0) }))
+                if model.settings.osdEnabled {
+                    Picker("Style", selection: Binding(
+                        get: { model.settings.osdStyle }, set: { model.setOSDStyle($0) })) {
+                        Text("Native").tag(OSDStyle.native)
+                        Text("Minimal").tag(OSDStyle.minimal)
+                        Text("Classic").tag(OSDStyle.classicTahoe)
+                    }
+                    Picker("Position", selection: Binding(
+                        get: { model.settings.osdPosition }, set: { model.setOSDPosition($0) })) {
+                        Text("Bottom").tag(OSDPosition.bottomCenter)
+                        Text("Center").tag(OSDPosition.center)
+                        Text("Top").tag(OSDPosition.topCenter)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
 
 private struct DisplaysSection: View {
     @EnvironmentObject private var model: AppModel
 
     private var selected: DisplayObservation? {
         model.displays.first { $0.recordID == model.selectedDisplayID }
-            ?? model.displays.first { $0.isMain }
+            ?? model.displays.first { $0.displayClass != .builtIn }
             ?? model.displays.first
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
             if model.displays.isEmpty {
                 ContentUnavailableView("No displays detected", systemImage: "display.trianglebadge.exclamationmark")
             } else {
                 if model.displays.count > 1 {
-                    Picker("", selection: Binding(
+                    Picker("Display", selection: Binding(
                         get: { selected?.recordID ?? model.displays.first?.recordID },
                         set: { model.selectedDisplayID = $0 })) {
                         ForEach(model.displays, id: \.recordID) { display in
                             Text(model.displayName(for: display)).tag(Optional(display.recordID))
                         }
                     }
-                    .pickerStyle(.segmented).labelsHidden()
-                    .padding(.horizontal, 16).padding(.top, 16)
+                    .padding(.horizontal, 20).padding(.top, 14)
                 }
-                if let display = selected {
-                    DisplayDetailView(display: display)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .navigationTitle("Displays")
-    }
-}
-
-// MARK: - Arrange
-
-private struct ArrangeSection: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: ODSpacing.md) {
-                DisplayArrangementView()
-                Text("Drag a display to reposition it. Changes apply immediately; save the layout as a scene under Scenes.")
-                    .font(.caption).foregroundStyle(.secondary)
-                ODDivider()
-                ProtectedLayoutCard()
-            }
-            .padding(ODSpacing.lg)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .navigationTitle("Arrange Displays")
-    }
-}
-
-// MARK: - Protected layout (Batch-4 #A)
-
-/// "Keep this arrangement": protects the layout for the display set currently on the desk, and lists
-/// the other sets that already have one. Protection is per display set, so laptop-alone and
-/// laptop-plus-desk each keep their own arrangement.
-private struct ProtectedLayoutCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            Text("Protected layout").font(.title3)
-            Toggle(isOn: Binding(
-                get: { model.settings.layoutProtectionEnabled },
-                set: { model.setLayoutProtectionEnabled($0) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Put my arrangement back when it changes")
-                    Text("When macOS (or another app) moves a display, changes its resolution, or "
-                         + "hands \u{201C}main\u{201D} to the other screen, the protected arrangement is "
-                         + "restored \u{2014} including which displays are switched off. A display you "
-                         + "turned off in OpenDisplay is switched back off after sleep whether this "
-                         + "is on or not.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if model.settings.layoutProtectionEnabled {
-                CurrentLayoutProtectionRow()
-                OtherProtectedLayoutsList()
+                if let display = selected { DisplayDetailView(display: display) }
             }
         }
     }
 }
 
-private struct CurrentLayoutProtectionRow: View {
-    @EnvironmentObject private var model: AppModel
-
+private struct ComputersSection: View {
     var body: some View {
-        ODCard {
-            ODRow("This display set", secondary: status) {
-                HStack(spacing: 8) {
-                    Button(model.protectedLayoutForCurrentSet == nil ? "Protect Current Layout" : "Update") {
-                        Task { await model.protectCurrentLayout() }
-                    }
-                    .controlSize(.small).disabled(model.busy)
-                    if model.protectedLayoutForCurrentSet != nil {
-                        Button("Remove") {
-                            model.removeProtectedLayout(fingerprint: model.currentLayoutFingerprint)
-                        }
-                        .controlSize(.small)
-                    }
-                }
+        Form {
+            Section("Computers") {
+                InputHotkeySection()
             }
         }
-    }
-
-    private var status: String {
-        guard let protected = model.protectedLayoutForCurrentSet else { return "Not protected" }
-        // Members, not observations: a display the arrangement keeps switched off is one of the
-        // displays it covers, and on the experimental path it left no observation behind to count.
-        let count = LayoutProtectionPolicy.members(of: protected).count
-        return "Protected \u{00B7} \(count) display\(count == 1 ? "" : "s") \u{00B7} captured "
-            + protected.capturedAt.formatted(.dateTime.month(.abbreviated).day())
+        .formStyle(.grouped)
     }
 }
 
-/// The layouts stored for display sets that aren't on the desk right now — a docked setup you
-/// protected last week is still listed (and removable) while you're on the road.
-private struct OtherProtectedLayoutsList: View {
+/// Recovery remains available for displays previously managed by an older build.
+private struct TroubleshootingSection: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        let others = model.settings.protectedLayouts
-            .filter { $0.key != model.currentLayoutFingerprint }
-            .sorted { $0.key < $1.key }
-        if !others.isEmpty {
-            VStack(alignment: .leading, spacing: ODSpacing.xs) {
-                Text("Other protected layouts").font(.caption).foregroundStyle(.secondary)
-                ODCard {
-                    ForEach(Array(others.enumerated()), id: \.element.key) { index, entry in
-                        if index > 0 { ODDivider() }
-                        ODRow(memberNames(of: entry.value),
-                              secondary: "captured " + entry.value.capturedAt.formatted(
-                                .dateTime.month(.abbreviated).day())) {
-                            Button(role: .destructive) {
-                                model.removeProtectedLayout(fingerprint: entry.key)
-                            } label: { Image(systemName: "trash") }
-                                .buttonStyle(.borderless)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Names every member the arrangement covers, switched-off displays included. Those displays are
-    /// absent from the desk (and, when truly disabled, from the stored snapshot too), so the
-    /// remembered-display index is what names them.
-    private func memberNames(of config: ProtectedConfig) -> String {
-        LayoutProtectionPolicy.members(of: config)
-            .map { model.rememberedDisplayName(for: $0) }
-            .sorted()
-            .joined(separator: " + ")
-    }
-}
-
-// MARK: - Scenes
-
-private struct ScenesSection: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: ODSpacing.md) {
-                if let warning = model.sceneWarning {
-                    ODInlineBanner(tone: .orange, systemImage: "exclamationmark.triangle", title: warning)
-                }
-                if model.scenes.isEmpty {
-                    Text("No saved scenes yet. Arrange your displays, then save the current arrangement below.")
-                        .font(.callout).foregroundStyle(.secondary)
+        Form {
+            Section("Switching status") {
+                if let status = model.inputHandoffStatus {
+                    Text(status)
+                } else if let status = model.deviceActivityStatus {
+                    Text(status)
                 } else {
-                    ODCard {
-                        ForEach(Array(model.scenes.enumerated()), id: \.element.id) { index, scene in
-                            if index > 0 { ODDivider() }
-                            ODRow(scene.name, secondary: "\(scene.members.count) displays") {
-                                HStack(spacing: 8) {
-                                    Button("Apply") { Task { await model.applyScene(scene) } }
-                                        .controlSize(.small).disabled(model.busy)
-                                    Button(role: .destructive) {
-                                        Task { await model.deleteScene(scene) }
-                                    } label: { Image(systemName: "trash") }
-                                        .buttonStyle(.borderless)
-                                }
-                            }
-                        }
-                    }
+                    Text("No switch activity yet.").foregroundStyle(.secondary)
                 }
-                SaveSceneRow()
             }
-            .padding(ODSpacing.lg)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            if !model.managedOffline.isEmpty {
+                Section("Display recovery") {
+                    Button("Reconnect managed displays") {
+                        Task { await model.reconnectAll() }
+                    }
+                    .disabled(model.busy)
+                }
+            }
+            Section("Diagnostics") {
+                DiagnosticsExportSection()
+            }
         }
-        .navigationTitle("Scenes")
+        .formStyle(.grouped)
     }
 }
 
-private struct SaveSceneRow: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var name = ""
-
-    var body: some View {
-        HStack(spacing: ODSpacing.sm) {
-            TextField("New scene name", text: $name).textFieldStyle(.roundedBorder)
-            Button("Save Current Arrangement") {
-                let trimmed = name.trimmingCharacters(in: .whitespaces)
-                guard !trimmed.isEmpty else { return }
-                Task { await model.saveScene(named: trimmed); name = "" }
-            }
-            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-    }
-}
-
-// MARK: - Diagnostics bundle export
-
-/// "Export diagnostics…" — builds the bundle a bug report needs (`DiagnosticsBundle`) on the
-/// Desktop and reveals it. Lists exactly what goes in before the user clicks, because the file is
-/// meant to be attached to a public issue.
 private struct DiagnosticsExportSection: View {
     @EnvironmentObject private var model: AppModel
     @State private var exporting = false
+    @State private var showContents = false
     @State private var result: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            Text("Diagnostics").font(.title3)
-            Text("If a display misbehaves, export a diagnostics file and attach it to your issue. "
-                 + "It is saved to your Desktop and is not sent anywhere. It contains:")
-                .font(.caption).foregroundStyle(.secondary)
-            ForEach(DiagnosticsBundle.contents, id: \.self) { item in
-                Text("\u{2022} " + item).font(.caption).foregroundStyle(.secondary)
+            Text("Collect display and system information to help investigate a problem. The file is saved to your Desktop and is not sent automatically.")
+                .appBodyFont().foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("What’s included", isExpanded: $showContents) {
+                VStack(alignment: .leading, spacing: ODSpacing.sm) {
+                    ForEach(DiagnosticsBundle.contents, id: \.self) { item in
+                        Text("\u{2022} " + item).appBodyFont().foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, ODSpacing.sm)
             }
             HStack(spacing: ODSpacing.sm) {
                 Button {
@@ -327,481 +302,40 @@ private struct DiagnosticsExportSection: View {
                 .disabled(exporting)
                 if exporting { ProgressView().controlSize(.small) }
             }
-            if let result { Text(result).font(.caption).foregroundStyle(.secondary) }
+            if let result { Text(result).appBodyFont().foregroundStyle(.secondary) }
         }
     }
 }
-
-// MARK: - Health & Recovery (diagnostics + recovery + Labs + activity)
-
-private struct HealthSection: View {
-    @EnvironmentObject private var model: AppModel
-
-    /// A DatePicker binding over a minutes-since-midnight Int setting (the schedule fields store
-    /// minutes so the cross-platform policy never touches Calendar). Anchored to a fixed reference
-    /// day; only the hour/minute components round-trip.
-    private func minuteBinding(get: @escaping () -> Int, set: @escaping (Int) -> Void) -> Binding<Date> {
-        Binding<Date>(
-            get: {
-                let base = Calendar.current.startOfDay(for: Date(timeIntervalSinceReferenceDate: 0))
-                return Calendar.current.date(byAdding: .minute, value: get(), to: base) ?? base
-            },
-            set: { date in
-                let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
-                set((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
-            })
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: ODSpacing.md) {
-                Text("Providers").font(.title3)
-                ForEach(model.diagnostics) { row in
-                    HStack(spacing: ODSpacing.sm) {
-                        Image(systemName: row.status == "supported" ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(row.status == "supported" ? ODColor.connected : ODColor.caution)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.provider)
-                            Text("\(row.status) · risk \(row.risk)\(row.reasons.isEmpty ? "" : " · \(row.reasons.joined(separator: ", "))")")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if row.experimental { ODBadge("Labs", tone: .orange) }
-                        Spacer()
-                    }
-                }
-
-                Divider()
-
-                Text("Recovery").font(.title3)
-                LabeledContent("Persistence policy", value: model.settings.persistencePolicy.rawValue)
-                LabeledContent("Global hotkey",
-                               value: model.settings.reconnectAllHotkeyEnabled ? model.reconnectAllHotkey : "disabled")
-                LabeledContent("Checkpoints", value: model.checkpointLocation)
-                Button {
-                    Task { await model.reconnectAll() }
-                } label: {
-                    Label("Reconnect All", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .disabled(model.busy)
-
-                Divider()
-
-                DiagnosticsExportSection()
-
-                Divider()
-
-                InputHotkeySection()
-
-                Divider()
-
-                Text("Behavior").font(.title3)
-                LaunchAtLoginToggle()
-                Toggle(isOn: Binding(
-                    get: { model.settings.preventDisplaySleepWithExternal },
-                    set: { model.setPreventDisplaySleepWithExternal($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Keep displays awake while an external is connected")
-                        Text("Holds a system \u{201C}prevent display sleep\u{201D} assertion whenever at least one "
-                             + "external display is present, so the screens don\u{2019}t idle-dim during a "
-                             + "presentation or always-on setup. Released automatically when the last external "
-                             + "is disconnected.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.autoDisconnectBuiltInOnExternal },
-                    set: { model.setAutoDisconnectBuiltInOnExternal($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Turn the built-in display off when an external connects")
-                        Text("When an external display arrives, the built-in panel is turned off automatically "
-                             + "(through the same safety-checked path as a manual disconnect). It comes back on "
-                             + "its own when the last external is unplugged. A second external doesn\u{2019}t change "
-                             + "anything.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.displayNotificationsEnabled },
-                    set: { model.setDisplayNotificationsEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Notify on display connect / disconnect")
-                        Text("Posts a system notification when an external display is connected or "
-                             + "disconnected, and when the built-in is auto-disconnected. Asks for notification "
-                             + "permission the first time you turn this on.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.updateCheckEnabled },
-                    set: { model.setUpdateCheckEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Check for updates automatically")
-                        Text("Looks at the release feed about once a day and shows what it finds in the "
-                             + "menu. Nothing is downloaded until you say so, and the menu\u{2019}s "
-                             + "\u{201C}Check for Updates\u{2026}\u{201D} works either way.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.automaticUpdateDownloadEnabled },
-                    set: { model.setAutomaticUpdateDownloadEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Download and install updates automatically")
-                        Text("Installs a new release on its own and relaunches OpenDisplay into it. Every "
-                             + "download is checked against the project\u{2019}s signing key before it runs. "
-                             + "Needs the automatic check above.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .disabled(!model.settings.updateCheckEnabled)
-                .padding(.leading, ODSpacing.lg)
-
-                Divider()
-
-                Text("On-screen display").font(.title3)
-                Toggle(isOn: Binding(
-                    get: { model.settings.osdEnabled },
-                    set: { model.setOSDEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Show an on-screen display for brightness & volume")
-                        Text("A floating HUD, like the system\u{2019}s own, appears on the affected display when "
-                             + "brightness or volume changes \u{2014} including changes driven by the menu or the "
-                             + "media keys below.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if model.settings.osdEnabled {
-                    HStack {
-                        Picker("Style", selection: Binding(
-                            get: { model.settings.osdStyle }, set: { model.setOSDStyle($0) })) {
-                            Text("Native").tag(OSDStyle.native)
-                            Text("Minimal").tag(OSDStyle.minimal)
-                            Text("Classic").tag(OSDStyle.classicTahoe)
-                            Text("External HUD only").tag(OSDStyle.external)
-                        }
-                        .fixedSize()
-                        Picker("Position", selection: Binding(
-                            get: { model.settings.osdPosition }, set: { model.setOSDPosition($0) })) {
-                            Text("Bottom").tag(OSDPosition.bottomCenter)
-                            Text("Top").tag(OSDPosition.topCenter)
-                            Text("Center").tag(OSDPosition.center)
-                        }
-                        .fixedSize()
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.publishOSDEventsEnabled },
-                    set: { model.setPublishOSDEventsEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Broadcast display events for notch / external HUD apps")
-                        Text("Publishes each brightness/volume change over a distributed notification "
-                             + "(\u{201C}dev.opendisplay.osd\u{201D}) so a notch app can render it. Off by default.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                Text("Media keys").font(.title3)
-                Toggle(isOn: Binding(
-                    get: { model.settings.mediaKeyInterceptionEnabled },
-                    set: { model.setMediaKeyInterceptionEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Use the brightness & volume keys to control displays")
-                        Text("Routes the hardware brightness keys to the chosen display (external "
-                             + "brightness over DDC). Volume keys follow the current sound output device, "
-                             + "driving that monitor's volume over DDC only when the audio plays through "
-                             + "it. Needs macOS Accessibility permission to capture the keys; nothing is "
-                             + "requested until you turn this on.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if model.settings.mediaKeyInterceptionEnabled {
-                    Picker("Brightness keys control the", selection: Binding(
-                        get: { model.settings.mediaKeyTargetMode }, set: { model.setMediaKeyTargetMode($0) })) {
-                        Text("Display under the pointer").tag(MediaKeyTargetMode.underCursor)
-                        Text("Main display").tag(MediaKeyTargetMode.mainDisplay)
-                        Text("Built-in display").tag(MediaKeyTargetMode.builtInAlways)
-                    }
-                    .fixedSize()
-                    Text("Volume keys follow the current sound output device.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if !MediaKeyTap.isAccessibilityTrusted {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                            Text("Accessibility permission needed to capture the keys.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("Open Accessibility Settings\u{2026}") { openAccessibilitySettings() }
-                                .controlSize(.small)
-                        }
-                    } else {
-                        Text("Accessibility granted \u{2014} media keys are active.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                #if !PUBLIC_API_ONLY
-                Divider()
-
-                HStack(spacing: 8) {
-                    Text("Adaptive display").font(.title3)
-                    ODBadge("Labs", tone: .orange)
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.adaptiveBrightnessSyncEnabled },
-                    set: { model.setAdaptiveBrightnessSyncEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Match external brightness to the built-in display")
-                        Text("The monitor\u{2019}s real backlight follows the built-in panel \u{2014} which macOS "
-                             + "already adjusts from the ambient light sensor \u{2014} over DDC. Moving a slider "
-                             + "teaches it your preferred offset and pauses it for a minute. With the lid "
-                             + "closed it follows the schedule below instead. Brightness changed with the "
-                             + "monitor\u{2019}s own buttons can\u{2019}t be seen and may be overridden. "
-                             + "Displays in a group are left out \u{2014} their group drives them instead.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.adaptiveWarmthEnabled },
-                    set: { model.setAdaptiveWarmthEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Warm the monitor\u{2019}s colours in the evening")
-                        Text("Switches the monitor\u{2019}s hardware colour preset in the evening and back "
-                             + "each morning \u{2014} reducing blue light at the panel level, on top of Night "
-                             + "Shift\u{2019}s software tint. Follows Night Shift\u{2019}s own on/off state when "
-                             + "readable (best effort); otherwise the schedule below decides.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if model.settings.adaptiveWarmthEnabled {
-                    Picker("Evening preset", selection: Binding(
-                        get: { model.settings.adaptiveEveningPreset },
-                        set: { model.setAdaptiveEveningPreset($0) })) {
-                        ForEach([1, 2, 3, 4, 5], id: \.self) { code in
-                            Text(model.presetName(code)).tag(code)
-                        }
-                    }
-                    .fixedSize()
-                }
-                Toggle(isOn: Binding(
-                    get: { model.settings.adaptiveLocationModeEnabled },
-                    set: { model.setAdaptiveLocationModeEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Follow the sun\u{2019}s position (Location Mode)")
-                        Text("Drives brightness from the sun\u{2019}s elevation at the location set "
-                             + "below \u{2014} dim near dawn/dusk, full once the sun is well up. A "
-                             + "better lid-closed fallback than the flat schedule; the built-in "
-                             + "mirror and ambient sensor still take priority when available, and "
-                             + "Clock Mode\u{2019}s explicit schedule always wins.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if model.settings.adaptiveLocationModeEnabled, !model.settings.clockScheduleEnabled {
-                    ClockLocationRow()
-                }
-                if model.settings.adaptiveBrightnessSyncEnabled || model.settings.adaptiveWarmthEnabled {
-                    HStack(spacing: 16) {
-                        DatePicker("Day starts", selection: minuteBinding(
-                            get: { model.settings.adaptiveDayStartMinute },
-                            set: { model.setAdaptiveSchedule(dayStartMinute: $0,
-                                                             nightStartMinute: model.settings.adaptiveNightStartMinute,
-                                                             transitionMinutes: model.settings.adaptiveTransitionMinutes) }),
-                                   displayedComponents: .hourAndMinute)
-                        DatePicker("Evening starts", selection: minuteBinding(
-                            get: { model.settings.adaptiveNightStartMinute },
-                            set: { model.setAdaptiveSchedule(dayStartMinute: model.settings.adaptiveDayStartMinute,
-                                                             nightStartMinute: $0,
-                                                             transitionMinutes: model.settings.adaptiveTransitionMinutes) }),
-                                   displayedComponents: .hourAndMinute)
-                        Stepper("Ramp: \(model.settings.adaptiveTransitionMinutes) min",
-                                value: Binding(
-                                    get: { model.settings.adaptiveTransitionMinutes },
-                                    set: { model.setAdaptiveSchedule(dayStartMinute: model.settings.adaptiveDayStartMinute,
-                                                                     nightStartMinute: model.settings.adaptiveNightStartMinute,
-                                                                     transitionMinutes: $0) }),
-                                in: 5...120, step: 5)
-                    }
-                    .fixedSize()
-                    if model.settings.adaptiveBrightnessSyncEnabled {
-                        HStack(spacing: 16) {
-                            Stepper("Day brightness: \(Int((model.settings.adaptiveFallbackDayLevel * 100).rounded()))%",
-                                    value: Binding(
-                                        get: { Double(model.settings.adaptiveFallbackDayLevel) },
-                                        set: { model.setAdaptiveFallbackLevels(day: Float($0),
-                                                                               night: model.settings.adaptiveFallbackNightLevel) }),
-                                    in: 0.1...1, step: 0.05)
-                            Stepper("Night brightness: \(Int((model.settings.adaptiveFallbackNightLevel * 100).rounded()))%",
-                                    value: Binding(
-                                        get: { Double(model.settings.adaptiveFallbackNightLevel) },
-                                        set: { model.setAdaptiveFallbackLevels(day: model.settings.adaptiveFallbackDayLevel,
-                                                                               night: Float($0)) }),
-                                    in: 0.1...1, step: 0.05)
-                        }
-                        .fixedSize()
-                    }
-                    Text("Brightness intelligence, best available first: built-in display active \u{2192} "
-                         + "mirror its light-sensor level · built-in off but lid open \u{2192} read the "
-                         + "ambient light sensor directly · lid closed \u{2192} this schedule (day/night "
-                         + "levels, ramped). Warmth uses the schedule whenever Night Shift isn\u{2019}t "
-                         + "readable.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                Divider()
-                ClockModeCard()
-
-                Divider()
-                AppPresetsCard()
-                #endif
-
-                Divider()
-
-                Text("Labs").font(.title3)
-                #if !PUBLIC_API_ONLY
-                Toggle(isOn: $model.experimentalRotationEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Experimental display rotation")
-                        Text("Rotate displays via a private API. Off by default; runs through a safety-checked, "
-                             + "isolated helper with automatic rollback, and is excluded from App Store builds.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                #endif
-                // Public Metal/CG only, so unlike the rotation toggle above this stays in the
-                // public-API-only build too.
-                Toggle(isOn: Binding(
-                    get: { model.settings.xdrBrightnessEnabled },
-                    set: { model.setXDRBrightnessEnabled($0) }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("XDR Brightness")
-                        Text("Unlock the built-in XDR panel\u{2019}s full brightness for SDR content. "
-                             + "Experimental: HDR content will look clipped while boosted, and sustained "
-                             + "max brightness increases panel temperature. Never persists past quit.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if model.settings.xdrBrightnessEnabled {
-                    XDRPowerAutomationRows()
-                }
-
-                Divider()
-
-                Text("Recent Activity").font(.title3)
-                if model.recentActivity.isEmpty {
-                    Text("No recorded activity yet.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(model.recentActivity.enumerated()), id: \.offset) { _, entry in
-                        HStack(spacing: ODSpacing.sm) {
-                            Text(entry.command).font(.caption).bold()
-                            Text(entry.status).font(.caption).foregroundStyle(.secondary)
-                            if !entry.targets.isEmpty {
-                                Text(entry.targets.joined(separator: ", "))
-                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            Spacer()
-                            Text(entry.timestamp.formatted(date: .omitted, time: .shortened))
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .padding(ODSpacing.lg)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .navigationTitle("Health & Recovery")
-    }
-}
-
-// MARK: - XDR Brightness power automations (Issue #35)
-
-/// The rules that turn an XDR boost back off on their own, shown under the Labs toggle only while
-/// XDR Brightness is on — they are meaningless otherwise, and the Labs section is long enough.
-///
-/// Indented under the feature they qualify, like the automatic-update row under its check toggle.
-/// The restore row is last and reads as the softener it is: it only ever undoes the three rules
-/// above it, and the auto-off timer deliberately isn't one of them.
-private struct XDRPowerAutomationRows: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: Binding(
-                get: { model.settings.xdrDisableOnBattery },
-                set: { model.setXDRDisableOnBattery($0) }
-            )) {
-                Text("Turn off on battery power")
-            }
-            Toggle(isOn: Binding(
-                get: { model.settings.xdrDisableInLowPowerMode },
-                set: { model.setXDRDisableInLowPowerMode($0) }
-            )) {
-                Text("Turn off in Low Power Mode")
-            }
-            HStack(spacing: 16) {
-                Picker("Turn off below", selection: Binding(
-                    get: { model.settings.xdrLowBatteryCutoffPercent },
-                    set: { model.setXDRLowBatteryCutoffPercent($0) })) {
-                    Text("Never").tag(Int?.none)
-                    ForEach(XDRPowerAutomation.lowBatteryCutoffOptions, id: \.self) { percent in
-                        Text("\(percent)% battery").tag(Int?.some(percent))
-                    }
-                }
-                .fixedSize()
-                Picker("Turn off after", selection: Binding(
-                    get: { model.settings.xdrAutoOffMinutes },
-                    set: { model.setXDRAutoOffMinutes($0) })) {
-                    Text("Never").tag(Int?.none)
-                    ForEach(XDRPowerAutomation.autoOffMinuteOptions, id: \.self) { minutes in
-                        Text(Self.durationLabel(minutes)).tag(Int?.some(minutes))
-                    }
-                }
-                .fixedSize()
-            }
-            Toggle(isOn: Binding(
-                get: { model.settings.xdrRestoreOnPower },
-                set: { model.setXDRRestoreOnPower($0) }
-            )) {
-                Text("Bring the boost back when power returns")
-            }
-            Text("The boost is the biggest single draw on the battery, so these switch it off for "
-                 + "you. The first three are conditions \u{2014} when they all clear, the last one "
-                 + "puts the exact brightness you had back, unless you\u{2019}ve changed it "
-                 + "yourself since. The timer isn\u{2019}t: time spent is spent.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(.leading, ODSpacing.lg)
-    }
-
-    /// "30 min" / "1 hour" / "2 hours" — minutes below an hour, whole hours above.
-    private static func durationLabel(_ minutes: Int) -> String {
-        guard minutes >= 60 else { return "\(minutes) min" }
-        let hours = minutes / 60
-        return hours == 1 ? "1 hour" : "\(hours) hours"
-    }
-}
-
-// MARK: - About (mirrors the standalone About window as an inline Settings card)
 
 private struct AboutSection: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: ODSpacing.md) {
                 ODCard {
                     AppIdentityRow()
                     ODDivider()
-                    UpdateCheckRow()
+                    if SoftwareUpdater.updatesEnabled {
+                        UpdateCheckRow()
+                        ODDivider()
+                        ODRow("Check for updates automatically") {
+                            Toggle("Check for updates automatically", isOn: Binding(
+                                get: { model.settings.updateCheckEnabled },
+                                set: { model.setUpdateCheckEnabled($0) }))
+                                .labelsHidden().toggleStyle(.switch)
+                        }
+                        ODDivider()
+                        ODRow("Install updates automatically") {
+                            Toggle("Install updates automatically", isOn: Binding(
+                                get: { model.settings.automaticUpdateDownloadEnabled },
+                                set: { model.setAutomaticUpdateDownloadEnabled($0) }))
+                                .labelsHidden().toggleStyle(.switch)
+                                .disabled(!model.settings.updateCheckEnabled)
+                        }
+                    } else {
+                        ODRow("Updates", secondary: "Not configured for this build") { EmptyView() }
+                    }
                     ForEach(AboutView.projectLinks) { link in
                         ODDivider()
                         ProjectLinkRow(link: link)
@@ -811,14 +345,13 @@ private struct AboutSection: View {
             .padding(ODSpacing.lg)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .navigationTitle("About")
     }
 }
 
 /// App icon, name, and running version/build — the same bundle-info source `AboutView` reads.
 private struct AppIdentityRow: View {
     var body: some View {
-        ODRow("OpenDisplay", secondary: "Version \(AboutView.version) (build \(AboutView.build))") {
+        ODRow("OpenSwitch", secondary: "Development build \(AboutView.build)") {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable().frame(width: 28, height: 28)
                 .accessibilityHidden(true)
@@ -854,443 +387,5 @@ private struct ProjectLinkRow: View {
     }
 }
 
-// MARK: - Arrange canvas (drag-to-position)
 
-/// The drag-to-arrange canvas: each active display is a proportionally-sized, positioned tile
-/// (mirroring System Settings › Displays › Arrange). Dropping a tile applies its new origin live;
-/// Core Graphics then re-snaps the layout so displays stay adjacent and the canvas re-renders.
-private struct DisplayArrangementView: View {
-    @EnvironmentObject private var model: AppModel
-    private let canvas = CGSize(width: 480, height: 210)
-
-    var body: some View {
-        let tiles = model.displays.compactMap { display -> (DisplayObservation, CGRect)? in
-            guard let mode = display.mode, display.isActive else { return nil }
-            return (display, CGRect(x: CGFloat(display.origin.x), y: CGFloat(display.origin.y),
-                                    width: CGFloat(mode.pointWidth), height: CGFloat(mode.pointHeight)))
-        }
-        let union = tiles.map(\.1).reduce(CGRect.null) { $0.union($1) }
-        let scale: CGFloat = (union.isNull || union.width < 1 || union.height < 1)
-            ? 0.05
-            : min(canvas.width / union.width, canvas.height / union.height) * 0.82
-
-        return ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.1))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.3)))
-            ForEach(tiles, id: \.0.recordID) { display, frame in
-                DisplayTile(
-                    display: display,
-                    tileSize: CGSize(width: frame.width * scale, height: frame.height * scale),
-                    center: CGPoint(x: (frame.midX - union.midX) * scale + canvas.width / 2,
-                                    y: (frame.midY - union.midY) * scale + canvas.height / 2),
-                    scale: scale)
-            }
-        }
-        .frame(width: canvas.width, height: canvas.height)
-    }
-}
-
-private struct DisplayTile: View {
-    @EnvironmentObject private var model: AppModel
-    let display: DisplayObservation
-    let tileSize: CGSize
-    let center: CGPoint
-    let scale: CGFloat
-    @State private var drag: CGSize = .zero
-
-    var body: some View {
-        let tint = display.isMain ? Color.accentColor : Color.secondary
-        RoundedRectangle(cornerRadius: 4)
-            .fill(tint.opacity(0.18))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(tint, lineWidth: display.isMain ? 2 : 1))
-            .overlay(
-                VStack(spacing: 1) {
-                    Text(model.displayName(for: display)).font(.caption2).lineLimit(1).padding(.horizontal, 3)
-                    if display.isMain { Text("Main").font(.system(size: 8)).foregroundStyle(.secondary) }
-                }
-            )
-            .frame(width: max(tileSize.width, 36), height: max(tileSize.height, 24))
-            .position(x: center.x + drag.width, y: center.y + drag.height)
-            .gesture(
-                DragGesture()
-                    .onChanged { drag = $0.translation }
-                    .onEnded { value in
-                        let dx = Int((value.translation.width / scale).rounded())
-                        let dy = Int((value.translation.height / scale).rounded())
-                        drag = .zero
-                        guard dx != 0 || dy != 0 else { return }
-                        let origin = DisplayOrigin(x: display.origin.x + dx, y: display.origin.y + dy)
-                        Task { await model.setPosition(origin, for: display) }
-                    }
-            )
-    }
-}
-
-#if !PUBLIC_API_ONLY
-// MARK: - Clock Mode (Issue 30)
-
-/// Clock Mode editor: enable the schedule, manage time/solar-anchored brightness points, and set the
-/// location that solar anchors resolve against. Precedence note is shown inline so the user knows
-/// Clock Mode outranks Adaptive brightness sync when both are on.
-private struct ClockModeCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            Text("Clock Mode").font(.title3)
-            Toggle(isOn: Binding(
-                get: { model.settings.clockScheduleEnabled },
-                set: { model.setClockScheduleEnabled($0) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Follow a brightness schedule")
-                    Text("Sets external-display brightness at times you choose \u{2014} fixed clock "
-                         + "times or solar anchors (sunrise, solar noon, sunset) with a per-anchor "
-                         + "offset \u{2014} gliding between points. Changes are silent (no HUD). When "
-                         + "Adaptive brightness sync is also on, this explicit schedule wins.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if model.settings.clockScheduleEnabled {
-                ClockScheduleList()
-                ClockLocationRow()
-            }
-        }
-    }
-}
-
-private struct ClockScheduleList: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            if model.settings.clockScheduleEntries.isEmpty {
-                Text("No schedule points yet. Add one below \u{2014} for example \u{201C}70% thirty "
-                     + "minutes before sunrise\u{201D}.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                ODCard {
-                    ForEach(Array(model.settings.clockScheduleEntries.enumerated()),
-                            id: \.element.id) { index, entry in
-                        if index > 0 { ODDivider() }
-                        ClockScheduleEntryRow(entry: entry)
-                    }
-                }
-            }
-            Button {
-                model.upsertClockScheduleEntry(
-                    ClockScheduleEntry(anchor: .time, timeMinute: 8 * 60, brightness: 0.7,
-                                       transition: .ramp))
-            } label: {
-                Label("Add schedule point", systemImage: "plus")
-            }
-            .controlSize(.small)
-        }
-    }
-}
-
-private struct ClockScheduleEntryRow: View {
-    @EnvironmentObject private var model: AppModel
-    let entry: ClockScheduleEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: ODSpacing.sm) {
-                Picker("", selection: anchorBinding) {
-                    Text("Time").tag(ScheduleAnchor.time)
-                    Text("Sunrise").tag(ScheduleAnchor.sunrise)
-                    Text("Solar noon").tag(ScheduleAnchor.solarNoon)
-                    Text("Sunset").tag(ScheduleAnchor.sunset)
-                }
-                .labelsHidden().fixedSize()
-
-                if entry.anchor == .time {
-                    DatePicker("", selection: hourMinuteBinding, displayedComponents: .hourAndMinute)
-                        .labelsHidden().fixedSize()
-                } else {
-                    Stepper(offsetLabel, value: offsetBinding, in: -180...180, step: 5)
-                        .fixedSize()
-                }
-                Spacer()
-                Button(role: .destructive) {
-                    model.deleteClockScheduleEntry(entry)
-                } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-            }
-            HStack(spacing: ODSpacing.sm) {
-                Stepper("Brightness: \(Int((entry.brightness * 100).rounded()))%",
-                        value: brightnessBinding, in: 0...1, step: 0.05)
-                    .fixedSize()
-                Picker("", selection: transitionBinding) {
-                    Text("Instant").tag(ScheduleTransition.instant)
-                    Text("30-min ramp").tag(ScheduleTransition.ramp)
-                    Text("Continuous").tag(ScheduleTransition.continuous)
-                }
-                .labelsHidden().fixedSize()
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var offsetLabel: String {
-        let minutes = entry.offsetMinutes
-        if minutes == 0 { return "at the anchor" }
-        return minutes < 0 ? "\(-minutes) min before" : "\(minutes) min after"
-    }
-
-    private var anchorBinding: Binding<ScheduleAnchor> {
-        Binding(get: { entry.anchor }, set: { updated in updating { $0.anchor = updated } })
-    }
-    private var transitionBinding: Binding<ScheduleTransition> {
-        Binding(get: { entry.transition }, set: { updated in updating { $0.transition = updated } })
-    }
-    private var offsetBinding: Binding<Int> {
-        Binding(get: { entry.offsetMinutes }, set: { updated in updating { $0.offsetMinutes = updated } })
-    }
-    private var brightnessBinding: Binding<Double> {
-        Binding(get: { Double(entry.brightness) },
-                set: { updated in updating { $0.brightness = Float(updated) } })
-    }
-    private var hourMinuteBinding: Binding<Date> {
-        Binding(
-            get: {
-                let base = Calendar.current.startOfDay(for: Date(timeIntervalSinceReferenceDate: 0))
-                return Calendar.current.date(byAdding: .minute, value: entry.timeMinute, to: base) ?? base
-            },
-            set: { date in
-                let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
-                updating { $0.timeMinute = (comps.hour ?? 0) * 60 + (comps.minute ?? 0) }
-            })
-    }
-
-    private func updating(_ transform: (inout ClockScheduleEntry) -> Void) {
-        var copy = entry
-        transform(&copy)
-        model.upsertClockScheduleEntry(copy)
-    }
-}
-
-private struct ClockLocationRow: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: ODSpacing.sm) {
-                TextField("Latitude", value: latitudeBinding, format: .number)
-                    .textFieldStyle(.roundedBorder).frame(width: 100)
-                TextField("Longitude", value: longitudeBinding, format: .number)
-                    .textFieldStyle(.roundedBorder).frame(width: 100)
-                Button("Use current location") { model.useCurrentLocationForClock() }
-                    .controlSize(.small)
-            }
-            Text(locationCaption).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var locationCaption: String {
-        if model.settings.clockManualLocation == nil {
-            return "Sunrise / noon / sunset anchors need a location. Time anchors work without one."
-        }
-        return "Solar anchors use this location. \u{201C}Use current location\u{201D} fills it "
-            + "from Core Location."
-    }
-
-    private var latitudeBinding: Binding<Double> {
-        Binding(
-            get: { model.settings.clockManualLocation?.latitude ?? 0 },
-            set: { newLatitude in
-                let longitude = model.settings.clockManualLocation?.longitude ?? 0
-                model.setClockManualLocation(GeoCoordinate(latitude: newLatitude, longitude: longitude))
-            })
-    }
-    private var longitudeBinding: Binding<Double> {
-        Binding(
-            get: { model.settings.clockManualLocation?.longitude ?? 0 },
-            set: { newLongitude in
-                let latitude = model.settings.clockManualLocation?.latitude ?? 0
-                model.setClockManualLocation(GeoCoordinate(latitude: latitude, longitude: newLongitude))
-            })
-    }
-}
-
-private struct AppPresetsCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            HStack(spacing: 8) {
-                Text("App Presets").font(.title3)
-                ODBadge("Labs", tone: .orange)
-            }
-            Toggle(isOn: Binding(
-                get: { model.settings.appPresetsEnabled },
-                set: { model.setAppPresetsEnabled($0) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Switch a display preset when an app comes to the front")
-                    Text("When a chosen app becomes frontmost, its display\u{2019}s brightness \u{2014} and "
-                         + "optionally contrast and colour preset \u{2014} switch to the values you set, and "
-                         + "restore when the app leaves. Changes are silent (no HUD) and pause Adaptive "
-                         + "Display on those displays while the preset is active.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if model.settings.appPresetsEnabled {
-                AppPresetList()
-            }
-        }
-    }
-}
-
-private struct AppPresetList: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            if model.settings.appPresets.isEmpty {
-                Text("No app presets yet. Add one below \u{2014} for example \u{201C}dim to 40% when "
-                     + "Final Cut is in front\u{201D}.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                ODCard {
-                    ForEach(Array(model.settings.appPresets.enumerated()),
-                            id: \.element.id) { index, preset in
-                        if index > 0 { ODDivider() }
-                        AppPresetRow(preset: preset)
-                    }
-                }
-            }
-            AddAppPresetMenu()
-        }
-    }
-}
-
-private struct AddAppPresetMenu: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        Menu {
-            ForEach(availableChoices, id: \.bundleID) { choice in
-                Button(choice.name) {
-                    model.upsertAppPreset(AppPresetPolicy.AppPreset(
-                        bundleIdentifier: choice.bundleID, applicationName: choice.name,
-                        brightness: 0.5, target: .allDisplays))
-                }
-            }
-        } label: {
-            Label("Add app preset", systemImage: "plus")
-        }
-        .menuStyle(.borderlessButton)
-        .controlSize(.small)
-        .fixedSize()
-    }
-
-    /// Running apps that lack a preset already, so the menu never offers a duplicate.
-    private var availableChoices: [(name: String, bundleID: String)] {
-        let configured = Set(model.settings.appPresets.map(\.bundleIdentifier))
-        return model.runningApplicationChoices().filter { !configured.contains($0.bundleID) }
-    }
-}
-
-private struct AppPresetRow: View {
-    @EnvironmentObject private var model: AppModel
-    let preset: AppPresetPolicy.AppPreset
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: ODSpacing.sm) {
-                Text(preset.applicationName).bold()
-                Spacer()
-                Picker("", selection: targetBinding) {
-                    Text("All displays").tag(AppPresetPolicy.Target.allDisplays)
-                    ForEach(externalDisplays, id: \.recordID) { observation in
-                        Text(model.displayName(for: observation))
-                            .tag(AppPresetPolicy.Target.display(observation.recordID.rawValue))
-                    }
-                }
-                .labelsHidden().fixedSize()
-                Button(role: .destructive) {
-                    model.removeAppPreset(preset)
-                } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-            }
-            HStack(spacing: ODSpacing.md) {
-                Toggle("Brightness", isOn: brightnessEnabledBinding)
-                if preset.brightness != nil {
-                    Stepper("\(Int(((preset.brightness ?? 0) * 100).rounded()))%", value: brightnessBinding,
-                            in: 0...1, step: 0.05)
-                        .fixedSize()
-                }
-            }
-            HStack(spacing: ODSpacing.md) {
-                Toggle("Contrast", isOn: contrastEnabledBinding)
-                if preset.contrast != nil {
-                    Stepper("\(Int(((preset.contrast ?? 0) * 100).rounded()))%", value: contrastBinding,
-                            in: 0...1, step: 0.05)
-                        .fixedSize()
-                }
-            }
-            HStack(spacing: ODSpacing.md) {
-                Toggle("Colour preset", isOn: colorPresetEnabledBinding)
-                if preset.colorPreset != nil {
-                    Picker("", selection: colorPresetBinding) {
-                        ForEach([1, 2, 3, 4, 5, 6], id: \.self) { code in
-                            Text(model.presetName(code)).tag(code)
-                        }
-                    }
-                    .labelsHidden().fixedSize()
-                }
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var externalDisplays: [DisplayObservation] {
-        model.displays.filter { $0.displayClass != .builtIn && $0.isActive }
-    }
-
-    private var targetBinding: Binding<AppPresetPolicy.Target> {
-        Binding(get: { preset.target }, set: { updated in updating { $0.target = updated } })
-    }
-    private var brightnessEnabledBinding: Binding<Bool> {
-        Binding(get: { preset.brightness != nil },
-                set: { isOn in updating { $0.brightness = isOn ? ($0.brightness ?? 0.5) : nil } })
-    }
-    private var brightnessBinding: Binding<Double> {
-        Binding(get: { Double(preset.brightness ?? 0) },
-                set: { updated in updating { $0.brightness = Float(updated) } })
-    }
-    private var contrastEnabledBinding: Binding<Bool> {
-        Binding(get: { preset.contrast != nil },
-                set: { isOn in updating { $0.contrast = isOn ? ($0.contrast ?? 0.5) : nil } })
-    }
-    private var contrastBinding: Binding<Double> {
-        Binding(get: { Double(preset.contrast ?? 0) },
-                set: { updated in updating { $0.contrast = Float(updated) } })
-    }
-    private var colorPresetEnabledBinding: Binding<Bool> {
-        Binding(get: { preset.colorPreset != nil },
-                set: { isOn in updating { $0.colorPreset = isOn ? ($0.colorPreset ?? 4) : nil } })
-    }
-    private var colorPresetBinding: Binding<Int> {
-        Binding(get: { preset.colorPreset ?? 4 },
-                set: { updated in updating { $0.colorPreset = updated } })
-    }
-
-    private func updating(_ transform: (inout AppPresetPolicy.AppPreset) -> Void) {
-        var copy = preset
-        transform(&copy)
-        model.upsertAppPreset(copy)
-    }
-}
-#endif
-
-/// Opens System Settings → Privacy & Security → Accessibility so the user can grant the permission the
-/// media-key tap needs (Batch-3 #3/#5).
-private func openAccessibilitySettings() {
-    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-        NSWorkspace.shared.open(url)
-    }
-}
 #endif

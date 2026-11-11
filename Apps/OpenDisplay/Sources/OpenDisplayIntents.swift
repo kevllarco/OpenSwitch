@@ -72,7 +72,7 @@ enum OpenDisplayAutomation {
     }
 
     private static func log(_ message: String) {
-        FileHandle.standardError.write(Data("OpenDisplay URL: \(message)\n".utf8))
+        FileHandle.standardError.write(Data("OpenSwitch URL: \(message)\n".utf8))
     }
 }
 
@@ -81,7 +81,7 @@ enum OpenDisplayAutomation {
 struct ReconnectAllIntent: AppIntent {
     static let title: LocalizedStringResource = "Reconnect All Displays"
     static let description = IntentDescription(
-        "Reconnects every OpenDisplay-managed offline display — the always-available recovery action."
+        "Reconnects every OpenSwitch-managed offline display — the always-available recovery action."
     )
     // The intent does its own work; no need to bring the app forward.
     static let openAppWhenRun = false
