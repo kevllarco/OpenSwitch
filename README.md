@@ -10,6 +10,8 @@ OpenSwitch is an early-stage project. You can build it from source and try it on
 
 The app has been exercised on a two-Mac setup with an LG display and Logitech keyboard and mouse. Other display and peripheral combinations need hardware testing before they can be described as supported.
 
+See the [input-switching compatibility guide](Docs/Compatibility/INPUT-SWITCHING.md) for verified hardware, likely candidates, and how to report results.
+
 ## Build on macOS
 
 Requirements: Xcode, Xcode Command Line Tools, and XcodeGen.

@@ -6,8 +6,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        Helps build the certified compatibility matrix. **Redact serials and other
-        identifying data.**
+        Helps build the compatibility matrix. Include exact device models and connection types
+        where possible. **Redact serials, pairing codes, host names, and other identifying data.**
+  - type: input
+    id: openswitch-version
+    attributes:
+      label: OpenSwitch version
+      placeholder: "e.g. 47.1"
+    validations:
+      required: false
   - type: input
     id: mac-model
     attributes:
@@ -29,6 +36,20 @@ body:
       placeholder: "e.g. Dell U2720Q (firmware M3B103)"
     validations:
       required: true
+  - type: input
+    id: keyboard
+    attributes:
+      label: Keyboard model and connection
+      placeholder: "e.g. MX Keys S, Bluetooth"
+    validations:
+      required: false
+  - type: input
+    id: mouse
+    attributes:
+      label: Mouse model and connection
+      placeholder: "e.g. MX Anywhere 3S, Bolt receiver"
+    validations:
+      required: false
   - type: dropdown
     id: route
     attributes:
@@ -61,3 +82,7 @@ body:
     id: notes
     attributes:
       label: Notes
+      description: |
+        For input switching, say whether the monitor, keyboard, and mouse each switched
+        successfully, and whether you tested both directions. Do not attach raw serial numbers
+        or pairing secrets.

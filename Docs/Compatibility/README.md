@@ -13,5 +13,10 @@ plus at least one accessibility (keyboard/VoiceOver) recovery run.
 Community results come in through the **Compatibility report** issue form; please redact
 serials and other identifying data.
 
+For monitor input switching and Logitech host switching, see
+[Input-switching compatibility](INPUT-SWITCHING.md). That guide separates hardware verified by
+the OpenSwitch maintainers from likely candidates backed by protocol evidence but not yet tested
+in OpenSwitch.
+
 > Baseline: macOS 13 Ventura → macOS 26 Tahoe; Apple Silicon first; Intel best-effort and
 > capability-gated. The signed compatibility/kill-switch dataset ships with each stable release.
