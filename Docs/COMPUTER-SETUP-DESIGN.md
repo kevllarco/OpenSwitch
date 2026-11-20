@@ -7,13 +7,16 @@
 3. The user assigns a shared monitor input to each computer.
 4. For each selected keyboard and mouse, the user assigns the Easy-Switch slot for each computer. Unknown mappings remain unselected.
 5. A review shows both computers, inputs, slots and shortcuts. Save applies the reviewed setup to both Macs and reports each result.
-6. Later additions reuse the existing profiles and identify peers by their OpenSwitch IDs.
+6. Later additions use the single-computer editor. It adds one profile to the existing topology,
+   preserves other computer settings, and sends the revised setup to every configured Mac.
+7. Each Mac pairs directly with every other Mac in the topology. Pairwise keys are stored in
+   Keychain; the shared setup carries peer IDs and device settings, never those keys.
 
 ## Data boundaries
 
 The shared setup needs a version, a stable setup ID and revision, and computer profiles keyed by OpenSwitch peer ID. A profile contains the user's display name, monitor input and transport, optional peripheral names and slots, and the intended shortcut. It must not contain credentials, raw input events, or a display record ID from another Mac.
 
-Each Mac maintains its own mapping from the shared monitor identity to a local display record. Match only when the local monitor is unambiguous; otherwise ask the user to select it locally. Shortcut availability is checked locally and an unavailable shortcut is reported for that Mac.
+Each Mac maintains its own mapping from the shared monitor identity to a local display record. Match only when the local monitor is unambiguous; otherwise ask the user to select it locally. Shortcut availability is checked locally and an unavailable shortcut is reported for that Mac. The topology supports two through nine Macs. Every Mac needs a direct approved pairing with every other Mac so availability and activity checks can authenticate each destination.
 
 Existing input-switch bindings remain usable until a reviewed setup is successfully applied. Migration must preserve their IDs, inputs, peripheral settings and shortcuts; names alone are not sufficient evidence to merge two profiles.
 

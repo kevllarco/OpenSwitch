@@ -13,6 +13,7 @@ struct AboutView: View {
     @EnvironmentObject private var model: AppModel
 
     private static let repo = "https://github.com/aquitaine/OpenDisplay"
+    static let releasesURL = URL(string: "https://github.com/kevllarco/OpenSwitch/releases")!
 
     /// A single project link shown both in this window and in Settings → About, so the two surfaces
     /// can never drift apart on titles, icons, or destinations.
@@ -56,11 +57,12 @@ struct AboutView: View {
                 .textSelection(.enabled)
                 .accessibilityLabel("Development build \(Self.build)")
                 .padding(.top, 2)
-            if SoftwareUpdater.updatesEnabled {
-                UpdateCheckStatusView()
-            } else {
-                Text("Updates are not configured for this build.")
+            UpdateCheckStatusView()
+            if !SoftwareUpdater.updatesEnabled {
+                Text("Automatic in-app updates are not configured for this development build.")
                     .appBodyFont().foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider().padding(.vertical, ODSpacing.xs)
@@ -105,22 +107,33 @@ struct UpdateCheckStatusView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        let presentation = SoftwareUpdatePolicy.presentation(for: model.updatePhase)
-        if presentation.showsProgress {
+        if !SoftwareUpdater.updatesEnabled {
+            Button {
+                NSWorkspace.shared.open(AboutView.releasesURL)
+            } label: {
+                Label("View releases", systemImage: "arrow.down.circle")
+            }
+            .controlSize(.regular)
+            .appBodyFont()
+            .accessibilityHint("Opens the OpenSwitch release downloads page")
+        } else {
+            let presentation = SoftwareUpdatePolicy.presentation(for: model.updatePhase)
+            if presentation.showsProgress {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(presentation.combinedTitle).appBodyFont().foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-        } else {
-            Button {
-                model.checkForUpdates()
-            } label: {
-                Label(presentation.combinedTitle, systemImage: presentation.systemImage)
+            } else {
+                Button {
+                    model.checkForUpdates()
+                } label: {
+                    Label(presentation.combinedTitle, systemImage: presentation.systemImage)
+                }
+                .controlSize(.regular)
+                .appBodyFont()
+                .accessibilityHint("Checks for a new version, then downloads and installs it")
             }
-            .controlSize(.regular)
-            .appBodyFont()
-            .accessibilityHint("Checks for a new version, then downloads and installs it")
         }
     }
 }

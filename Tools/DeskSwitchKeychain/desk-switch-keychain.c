@@ -1,5 +1,5 @@
-// Read the one OpenSwitch pairing key for the signed parent app only.
-// No arguments, persistent service, network access, or general keychain access.
+// Read one OpenSwitch pairing key for the signed parent app only.
+// The sole optional argument is a canonical peer UUID selecting a pairing item.
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <unistd.h>
@@ -54,13 +54,19 @@ static int authorized_parent(void) {
 }
 
 int main(int argc, char **argv) {
-    (void)argv;
-    if (argc != 1 || !authorized_parent()) return 77;
+    if ((argc != 1 && argc != 2) || !authorized_parent()) return 77;
+    CFStringRef account = argc == 2 ? CFStringCreateWithCString(NULL, argv[1], kCFStringEncodingUTF8)
+                                    : CFRetain(CFSTR("local-network-pairing"));
+    if (!account || (argc == 2 && CFStringGetLength(account) != 36)) {
+        if (account) CFRelease(account);
+        return 77;
+    }
     const void *keys[] = {kSecClass, kSecAttrService, kSecAttrAccount, kSecReturnData, kSecMatchLimit};
     const void *values[] = {kSecClassGenericPassword, CFSTR(PEER_SERVICE),
-        CFSTR("local-network-pairing"), kCFBooleanTrue, kSecMatchLimitOne};
+        account, kCFBooleanTrue, kSecMatchLimitOne};
     CFDictionaryRef query = CFDictionaryCreate(NULL, keys, values, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(account);
     CFTypeRef result = NULL;
     OSStatus status = SecItemCopyMatching(query, &result);
     CFRelease(query);

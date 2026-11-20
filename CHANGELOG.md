@@ -5,6 +5,20 @@ All notable changes to OpenDisplay are documented here. The format is based on
 [Semantic Versioning](https://semver.org/). OpenDisplay is pre-1.0 (0.x); anything may
 change until 1.0.
 
+## [0.12.0] — Release Candidate 1 (2026-11-19)
+
+### Added
+- **Support for three or more Macs in one shared setup.** Pair each Mac directly, then configure
+  monitor input, keyboard and mouse destinations across the group. Shared setup changes and
+  computer removals are synchronized to trusted Macs.
+- **Edit an existing computer setup without restarting the add flow.**
+- **Pairing guidance for unpaired destinations** and availability warnings that explain when a Mac
+  cannot be checked directly.
+- **OpenSwitch menu surface refinements** and clearer About/update messaging for development builds.
+
+### Release candidate
+- This prerelease is for testing and is not delivered through the automatic in-app update feed.
+
 ## [0.11.6] — 2026-10-14
 
 ### Fixed

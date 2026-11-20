@@ -46,10 +46,16 @@ struct InputHotkeySection: View {
     }
 
     private var hasOtherComputerSetup: Bool {
-        model.settings.hotkeyShortcuts.inputSwitchBindings.contains { entry in
-            guard let name = entry.destinationName else { return false }
-            return name.localizedCaseInsensitiveCompare(localComputerName) != .orderedSame
-        }
+        model.settings.hotkeyShortcuts.inputSwitchBindings.contains { $0.availabilityPeerID != nil || $0.id.contains(":") }
+    }
+
+    private var missingComputerPairings: Int {
+        let ids = Set(model.settings.hotkeyShortcuts.inputSwitchBindings.compactMap { entry -> UUID? in
+            guard entry.id.contains(":"), let suffix = entry.id.split(separator: ":").last else { return nil }
+            return UUID(uuidString: String(suffix))
+        })
+        guard ids.count > 1 else { return 0 }
+        return max(0, ids.count - 1 - ids.subtracting([model.peerPairing.localID]).intersection(model.peerPairing.trustedPeerIDs).count)
     }
 
     var body: some View {
@@ -62,6 +68,14 @@ struct InputHotkeySection: View {
                 InputHotkeyRow(entry: entry) { openEditor(entry) }
             }
 
+            if missingComputerPairings > 0 {
+                Label("Pair this Mac directly with each other computer. Choose Add computer, then select an existing destination to complete pairing and enable availability checks.",
+                      systemImage: "point.3.connected.trianglepath.dotted")
+                    .appBodyFont()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary)
+            }
+
             if let status = model.inputHandoffStatus {
                 Text(status).appBodyFont().foregroundStyle(.secondary)
             }
@@ -70,15 +84,13 @@ struct InputHotkeySection: View {
             }
 
             Button {
-                openEditor(nil)
+                if model.settings.hotkeyShortcuts.inputSwitchBindings.isEmpty {
+                    openEditor(nil)
+                } else {
+                    openDestinationEditor(nil)
+                }
             } label: {
                 Label("Add computer\u{2026}", systemImage: "plus")
-            }
-            if hasOtherComputerSetup {
-                Text("Set up both computers here and save the reviewed setup to both Macs.")
-                    .appBodyFont()
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -131,13 +143,11 @@ struct InputHotkeySection: View {
                 window?.close()
         }
         if let entry {
-            if entry.id.contains(":"), model.peerPairing.pairedPeerID != nil {
-                hosting.rootView = AnyView(LiveComputerSetupView(pairing: model.peerPairing, onClose: closeEditor)
-                    .environmentObject(model))
-            } else {
-                hosting.rootView = AnyView(AddInputHotkeySheet(entry: entry, pairing: model.peerPairing, onClose: closeEditor)
-                    .environmentObject(model))
-            }
+            // Editing a configured destination must stay in the single-destination editor.
+            // LiveComputerSetupView is the initial two-Mac wizard and recreates the pair when
+            // entered with an existing shared-setup row.
+            hosting.rootView = AnyView(AddInputHotkeySheet(entry: entry, pairing: model.peerPairing, onClose: closeEditor)
+                .environmentObject(model))
         } else {
             hosting.rootView = AnyView(LiveComputerSetupView(pairing: model.peerPairing, onClose: closeEditor)
                 .environmentObject(model))
@@ -153,6 +163,37 @@ struct InputHotkeySection: View {
         } else {
             window.center()
         }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func openDestinationEditor(_ entry: InputSwitchBinding?) {
+        if let editorWindow, editorWindow.isVisible {
+            editorWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let hosting = NSHostingController(rootView: AnyView(EmptyView()))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = entry == nil ? "Add Computer" : "Edit Computer"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 620, height: 440)
+        window.setContentSize(NSSize(width: 760, height: 560))
+        let settingsWindow = NSApp.windows.first { $0.identifier?.rawValue == "OpenSwitch.Settings" }
+        let closeEditor = { [weak window, weak settingsWindow] in
+            if let window, let settingsWindow { settingsWindow.removeChildWindow(window) }
+            window?.close()
+        }
+        hosting.rootView = AnyView(AddInputHotkeySheet(entry: entry, pairing: model.peerPairing, onClose: closeEditor)
+            .environmentObject(model))
+        editorWindow = window
+        if let settingsWindow {
+            settingsWindow.addChildWindow(window, ordered: .above)
+            let frame = settingsWindow.frame
+            window.setFrameOrigin(NSPoint(x: frame.midX - window.frame.width / 2,
+                                          y: frame.midY - window.frame.height / 2))
+        } else { window.center() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -176,17 +217,23 @@ private struct InputHotkeyRow: View {
             }
             .disabled(isRemoving)
         }
-        .alert("Remove this shared setup?", isPresented: $showingRemoveConfirmation) {
-            Button("Remove from Both Macs", role: .destructive) {
+        .alert(isLocalSharedProfile ? "Remove the shared setup?" : "Remove this computer?", isPresented: $showingRemoveConfirmation) {
+            Button(isLocalSharedProfile ? "Remove setup from all Macs" : "Remove computer from all Macs", role: .destructive) {
                 isRemoving = true
                 Task {
-                    _ = await model.removeSharedComputerSetup()
+                    if isLocalSharedProfile {
+                        _ = await model.removeSharedComputerSetup()
+                    } else if let peerID = sharedPeerID {
+                        _ = await model.removeSharedComputer(peerID: peerID)
+                    }
                     isRemoving = false
                 }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This removes the monitor, keyboard, and mouse switch setup from both Macs. You can run setup again later.")
+            Text(isLocalSharedProfile
+                 ? "This clears the shared monitor, keyboard, and mouse setup on every Mac."
+                 : "This removes this Mac and its switch settings from the shared setup on every Mac.")
         }
     }
 
@@ -203,6 +250,10 @@ private struct InputHotkeyRow: View {
     }
 
     private var isSharedSetupEntry: Bool { entry.id.contains(":") }
+    private var sharedPeerID: UUID? {
+        entry.id.split(separator: ":").last.flatMap { UUID(uuidString: String($0)) }
+    }
+    private var isLocalSharedProfile: Bool { sharedPeerID == model.peerPairing.localID }
 
     private var displayLabel: String {
         if let live = model.displays.first(where: { $0.recordID == entry.displayID }) {
@@ -248,6 +299,7 @@ private struct AddInputHotkeySheet: View {
     @State private var editingDeviceName: DeviceNameField?
     @State private var isDiscoveringDevices = false
     @State private var showingForgetConfirmation = false
+    @State private var isSavingSharedComputer = false
 
     init(entry: InputSwitchBinding? = nil, pairing: PeerPairing, onClose: @escaping () -> Void) {
         self.entry = entry
@@ -258,7 +310,8 @@ private struct AddInputHotkeySheet: View {
         let input = entry?.inputCode
         _destinationName = State(initialValue: entry?.destinationName ?? "")
         _selectedDisplayID = State(initialValue: entry?.displayID)
-        _selectedPeerID = State(initialValue: entry?.availabilityPeerID.flatMap(UUID.init(uuidString:)))
+        let sharedProfilePeerID = entry?.id.split(separator: ":").last.flatMap { UUID(uuidString: String($0)) }
+        _selectedPeerID = State(initialValue: entry?.availabilityPeerID.flatMap(UUID.init(uuidString:)) ?? sharedProfilePeerID)
         _selectedInputCode = State(initialValue: input)
         _localInputCode = State(initialValue: nil)
         _selectedDigit = State(initialValue: entry.flatMap { value in
@@ -300,9 +353,12 @@ private struct AddInputHotkeySheet: View {
 
     private var existingLocalProfile: InputSwitchBinding? {
         model.settings.hotkeyShortcuts.inputSwitchBindings.first { saved in
-            guard saved.id != entry?.id, let name = saved.destinationName else { return false }
-            return name.trimmingCharacters(in: .whitespacesAndNewlines)
-                .localizedCaseInsensitiveCompare(localComputerName) == .orderedSame
+            guard saved.id != entry?.id else { return false }
+            if saved.id.contains(":"), let suffix = saved.id.split(separator: ":").last,
+               UUID(uuidString: String(suffix)) == pairing.localID { return true }
+            return saved.availabilityPeerID == nil
+                && saved.destinationName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare(localComputerName) == .orderedSame
         }
     }
 
@@ -437,7 +493,7 @@ private struct AddInputHotkeySheet: View {
                 Button("Cancel") { onClose() }
                 Button(entry == nil ? "Add computer" : "Save changes") { addBinding() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(addBlockerMessage != nil)
+                    .disabled(addBlockerMessage != nil || isSavingSharedComputer)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -455,7 +511,7 @@ private struct AddInputHotkeySheet: View {
             }
         }
         .alert("Forget the paired Mac?", isPresented: $showingForgetConfirmation) {
-            Button("Forget Pairing", role: .destructive) { _ = pairing.forget() }
+            Button("Forget Pairing", role: .destructive) { _ = pairing.forget(peerID: selectedPeerID) }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes the saved secure connection on this Mac so you can pair another nearby Mac.")
@@ -498,14 +554,14 @@ private struct AddInputHotkeySheet: View {
             }
         }
         .onChange(of: pairing.pairedPeerID) { _, peerID in
-            guard entry == nil, peerID != nil,
-                  let computer = pairing.nearbyComputers.first(where: isPaired) else { return }
+            guard entry == nil, let peerID,
+                  let computer = pairing.nearbyComputers.first(where: { $0.peerID == peerID }) else { return }
             selectNearbyComputer(computer)
         }
         .onChange(of: pairing.pairedPeerDevices) { _, devices in
             guard entry == nil, devices != nil,
                   selectedPeerID == pairing.pairedPeerID,
-                  let computer = pairing.nearbyComputers.first(where: isPaired) else { return }
+                  let computer = pairing.nearbyComputers.first(where: { $0.peerID == selectedPeerID }) else { return }
             selectNearbyComputer(computer)
         }
         .onChange(of: selectedDigit) { _, _ in
@@ -655,9 +711,6 @@ private struct AddInputHotkeySheet: View {
                                 .foregroundStyle(.green)
                         } else if isPaired(computer) {
                             Button("Choose") { selectNearbyComputer(computer) }
-                        } else if pairing.pairedPeerID != nil {
-                            Text("Forget the current pairing before choosing this Mac.")
-                                .appBodyFont().foregroundStyle(.secondary)
                         } else {
                             Button(pairing.isConnecting ? "Waiting…" : "Connect") {
                                 pairing.connect(to: computer)
@@ -668,7 +721,7 @@ private struct AddInputHotkeySheet: View {
                     settingDivider
                 }
             }
-            if pairing.pairedPeerID != nil {
+            if selectedPeerID != nil {
                 settingRow("Pairing") {
                     Button("Forget pairing…", role: .destructive) { showingForgetConfirmation = true }
                 }
@@ -1006,8 +1059,8 @@ private struct AddInputHotkeySheet: View {
     }
 
     private func isPaired(_ computer: NearbyOpenSwitchMac) -> Bool {
-        if let pairedID = pairing.pairedPeerID, let discoveredID = computer.peerID {
-            return pairedID == discoveredID
+        if let discoveredID = computer.peerID {
+            return pairing.trustedPeerIDs.contains(discoveredID)
         }
         return pairing.pairedPeerName != nil
             && computer.name.localizedCaseInsensitiveCompare(pairing.pairedPeerName ?? "") == .orderedSame
@@ -1027,12 +1080,26 @@ private struct AddInputHotkeySheet: View {
             mode: peripheralMode, mouseName: mouseName, keyboardName: keyboardName,
             mouseSlot: mouseSlot, keyboardSlot: keyboardSlot)
 
-        if let entry {
-            model.addInputSwitchHotkey(InputSwitchBinding(
-                id: entry.id, displayID: displayID, inputCode: remoteInputCode, binding: candidateBinding,
-                transport: transportValue, peripherals: remotePeripherals,
-                destinationName: remoteName, availabilityPeerID: selectedPeerID?.uuidString
-            ))
+        let remoteBinding = InputSwitchBinding(
+            id: entry?.id ?? existingDestinationProfile?.id ?? UUID().uuidString,
+            displayID: displayID, inputCode: remoteInputCode, binding: candidateBinding,
+            transport: transportValue, peripherals: remotePeripherals,
+            destinationName: remoteName, availabilityPeerID: selectedPeerID?.uuidString)
+
+        let isSharedEdit = entry?.id.contains(":") == true
+        let isAddingToSharedSetup = entry == nil && existingLocalProfile != nil && selectedPeerID != nil
+        if (isSharedEdit || isAddingToSharedSetup), let selectedPeerID {
+            isSavingSharedComputer = true
+            Task {
+                let saved = await model.saveSharedComputer(remoteBinding, peerID: selectedPeerID)
+                isSavingSharedComputer = false
+                if saved { onClose() }
+            }
+            return
+        }
+
+        if entry != nil {
+            model.addInputSwitchHotkey(remoteBinding)
         } else {
             if existingLocalProfile == nil, let localInputCode {
                 let localPeripherals = peripheralMode == .monitorOnly ? nil : KVMPeripheralConfiguration(
@@ -1044,12 +1111,7 @@ private struct AddInputHotkeySheet: View {
                     destinationName: localComputerName
                 ))
             }
-            model.addInputSwitchHotkey(InputSwitchBinding(
-                id: existingDestinationProfile?.id ?? UUID().uuidString,
-                displayID: displayID, inputCode: remoteInputCode, binding: candidateBinding,
-                transport: transportValue, peripherals: remotePeripherals,
-                destinationName: remoteName, availabilityPeerID: selectedPeerID?.uuidString
-            ))
+            model.addInputSwitchHotkey(remoteBinding)
         }
         onClose()
     }

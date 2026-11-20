@@ -7,6 +7,7 @@
 # Usage: scripts/bundle-helper.sh [Debug|Release]
 set -euo pipefail
 CONFIG="${1:-Debug}"
+BUILD_ARCHS="${BUILD_ARCHS:-arm64 x86_64}"
 cd "$(dirname "$0")/.."
 
 # Always regenerate the (gitignored) project from project.yml so the build reflects the current
@@ -15,9 +16,9 @@ cd "$(dirname "$0")/.."
 make xcode >/dev/null
 
 echo "Building OpenDisplay.app ($CONFIG)…"
-xcodebuild -project OpenDisplay.xcodeproj -scheme OpenDisplay -configuration "$CONFIG" -destination 'platform=macOS' build >/dev/null
+xcodebuild -project OpenDisplay.xcodeproj -scheme OpenDisplay -configuration "$CONFIG" -destination 'generic/platform=macOS' ARCHS="$BUILD_ARCHS" ONLY_ACTIVE_ARCH=NO build >/dev/null
 echo "Building opendisplay CLI ($CONFIG)…"
-xcodebuild -project OpenDisplay.xcodeproj -scheme opendisplay -configuration "$CONFIG" -destination 'platform=macOS' build >/dev/null
+xcodebuild -project OpenDisplay.xcodeproj -scheme opendisplay -configuration "$CONFIG" -destination 'generic/platform=macOS' ARCHS="$BUILD_ARCHS" ONLY_ACTIVE_ARCH=NO build >/dev/null
 
 DD=$(ls -dt "$HOME"/Library/Developer/Xcode/DerivedData/OpenDisplay-* | head -1)
 PRODUCTS="$DD/Build/Products/$CONFIG"

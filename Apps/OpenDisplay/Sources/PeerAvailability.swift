@@ -84,7 +84,7 @@ enum PeerWire {
 enum PeerKeychain {
     private static var service: String { (Bundle.main.bundleIdentifier ?? "DeskSwitch") + ".peer-key" }
     private static let account = "local-network-pairing"
-    private static var query: [String: Any] {
+    private static func query(account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: account]
     }
@@ -95,8 +95,14 @@ enum PeerKeychain {
     }
 
     static func load() -> LoadResult {
+        load(account: account, helperArgument: nil)
+    }
+    static func load(peerID: UUID) -> LoadResult {
+        load(account: peerID.uuidString, helperArgument: peerID.uuidString)
+    }
+    private static func load(account: String, helperArgument: String?) -> LoadResult {
         #if PUBLIC_API_ONLY
-        var q = query
+        var q = query(account: account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -109,6 +115,7 @@ enum PeerKeychain {
         let process = Process()
         let output = Pipe()
         process.executableURL = helper
+        if let helperArgument { process.arguments = [helperArgument] }
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return .unavailable }
@@ -125,16 +132,27 @@ enum PeerKeychain {
         #endif
     }
     static func save(_ data: Data) -> Bool {
+        save(data, account: account)
+    }
+    static func save(_ data: Data, peerID: UUID) -> Bool {
+        save(data, account: peerID.uuidString)
+    }
+    private static func save(_ data: Data, account: String) -> Bool {
         guard data.count == 32 else { return false }
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let q = query(account: account)
+        let status = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecSuccess { return true }
         guard status == errSecItemNotFound else { return false }
-        var q = query
-        q[kSecValueData as String] = data
-        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+        var add = q
+        add[kSecValueData as String] = data
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
     static func remove() -> Bool {
-        let status = SecItemDelete(query as CFDictionary)
+        remove(account: account)
+    }
+    static func remove(peerID: UUID) -> Bool { remove(account: peerID.uuidString) }
+    private static func remove(account: String) -> Bool {
+        let status = SecItemDelete(query(account: account) as CFDictionary)
         return status == errSecSuccess || status == errSecItemNotFound
     }
 }
@@ -158,9 +176,9 @@ final class PeerAvailabilityService: @unchecked Sendable {
         return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
     }
     private let queue = DispatchQueue(label: "dev.deskswitch.peer-availability")
-    private var listener: NWListener?
+    private var listeners: [UUID: NWListener] = [:]
     private var localID: UUID?
-    private var key: Data?
+    private var keys: [UUID: Data] = [:]
     private var inbound: [UUID: NWConnection] = [:]
     private var activityProvider: (@Sendable () -> DeviceActivitySnapshot)?
 
@@ -168,33 +186,35 @@ final class PeerAvailabilityService: @unchecked Sendable {
         queue.async { self.activityProvider = provider }
     }
 
-    func configure(localID: UUID, key: Data?) {
+    func configure(localID: UUID, keys: [UUID: Data]) {
         queue.async { [self] in
-            listener?.cancel(); listener = nil
+            listeners.values.forEach { $0.cancel() }; listeners.removeAll()
             inbound.values.forEach { $0.cancel() }; inbound.removeAll()
             self.localID = localID
-            self.key = key
-            guard let key, key.count == 32 else { return }
-            do {
-                let newListener = try NWListener(using: Self.secureParameters(key: key), on: .any)
-                newListener.service = NWListener.Service(name: "OpenSwitch", type: Self.serviceType)
-                newListener.newConnectionHandler = { [weak self] connection in
-                    guard let self, self.localID == localID, self.key == key,
-                          self.inbound.count < 16 else { connection.cancel(); return }
-                    let id = UUID()
-                    self.inbound[id] = connection
-                    connection.stateUpdateHandler = { [weak self] state in
-                        switch state {
-                        case .cancelled, .failed: self?.inbound.removeValue(forKey: id)
-                        default: break
+            self.keys = keys.filter { $0.key != localID && $0.value.count == 32 }
+            guard !self.keys.isEmpty else { return }
+            for (peerID, key) in self.keys {
+                do {
+                    let newListener = try NWListener(using: Self.secureParameters(key: key), on: .any)
+                    newListener.service = NWListener.Service(name: peerID.uuidString, type: Self.serviceType)
+                    newListener.newConnectionHandler = { [weak self] connection in
+                        guard let self, self.localID == localID, self.keys[peerID] == key,
+                              self.inbound.count < 16 else { connection.cancel(); return }
+                        let id = UUID()
+                        self.inbound[id] = connection
+                        connection.stateUpdateHandler = { [weak self] state in
+                            switch state {
+                            case .cancelled, .failed: self?.inbound.removeValue(forKey: id)
+                            default: break
+                            }
                         }
+                        self.respond(connection, localID: localID, key: key)
                     }
-                    self.respond(connection, localID: localID, key: key)
+                    listeners[peerID] = newListener
+                    newListener.start(queue: queue)
+                } catch {
+                    NSLog("OpenSwitch could not start peer listener for %@", peerID.uuidString)
                 }
-                listener = newListener
-                newListener.start(queue: queue)
-            } catch {
-                // No listener means peers report unknown; switching remains possible via override.
             }
         }
     }
@@ -230,7 +250,7 @@ final class PeerAvailabilityService: @unchecked Sendable {
     private func query(expectedID: UUID, version: UInt8, timeout: TimeInterval) async -> Data? {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
-                guard let key, let localID, expectedID != localID,
+                guard let key = keys[expectedID], let localID, expectedID != localID,
                       let nonce = PeerWire.randomBytes(count: 32),
                       var request = PeerWire.request(nonce: nonce, peerID: expectedID) else {
                     continuation.resume(returning: nil); return
@@ -313,6 +333,11 @@ private final class PeerCheck: @unchecked Sendable {
 /// Coordinates the optional peer service for this app installation.
 @MainActor
 final class PeerPairing: ObservableObject {
+    struct TrustedPeer: Codable, Identifiable, Sendable {
+        var id: UUID
+        var name: String
+        var devices: LogitechHandoff.DeviceChoices?
+    }
     let localID: UUID
     let service = PeerAvailabilityService()
     let setupTransport = SharedSetupTransport()
@@ -320,6 +345,7 @@ final class PeerPairing: ObservableObject {
     @Published private(set) var isLoadingCode = false
     @Published private(set) var accessError = false
     @Published private(set) var nearbyComputers: [NearbyOpenSwitchMac] = []
+    @Published private(set) var trustedPeers: [TrustedPeer] = []
     @Published private(set) var pendingRequest: IncomingOpenSwitchPairing?
     @Published private(set) var pairedPeerID: UUID?
     @Published private(set) var pairedPeerName: String?
@@ -327,6 +353,7 @@ final class PeerPairing: ObservableObject {
     @Published private(set) var pairingStatus: String?
     @Published private(set) var isConnecting = false
     private let defaults: UserDefaults
+    private var peerKeys: [UUID: Data] = [:]
     private let discoveryService: BonjourPairingService
     private var keyRevision = 0
 
@@ -340,10 +367,18 @@ final class PeerPairing: ObservableObject {
             defaults.set(uuid.uuidString, forKey: key)
             localID = uuid
         }
-        pairedPeerID = defaults.string(forKey: "openSwitchPairedPeerID").flatMap(UUID.init(uuidString:))
-        pairedPeerName = defaults.string(forKey: "openSwitchPairedPeerName")
-        pairedPeerDevices = defaults.data(forKey: "openSwitchPairedPeerDevices")
+        let savedPeerID = defaults.string(forKey: "openSwitchPairedPeerID").flatMap(UUID.init(uuidString:))
+        let savedPeerName = defaults.string(forKey: "openSwitchPairedPeerName")
+        let savedDevices = defaults.data(forKey: "openSwitchPairedPeerDevices")
             .flatMap { try? JSONDecoder().decode(LogitechHandoff.DeviceChoices.self, from: $0) }
+        pairedPeerID = savedPeerID
+        pairedPeerName = savedPeerName
+        pairedPeerDevices = savedDevices
+        let savedPeers = defaults.data(forKey: "openSwitchTrustedPeers")
+            .flatMap { try? JSONDecoder().decode([TrustedPeer].self, from: $0) } ?? []
+        trustedPeers = savedPeers.isEmpty
+            ? (savedPeerID.flatMap { id in savedPeerName.map { TrustedPeer(id: id, name: $0, devices: savedDevices) } }.map { [$0] } ?? [])
+            : savedPeers
         let computerName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         discoveryService = BonjourPairingService(localID: localID, localName: computerName)
         discoveryService.onNearbyChanged = { [weak self] computers in
@@ -362,7 +397,7 @@ final class PeerPairing: ObservableObject {
             }
         }
         discoveryService.onPaired = { [weak self] peerID, name, key, devices in
-            guard PeerKeychain.save(key) else {
+            guard PeerKeychain.save(key, peerID: peerID) else {
                 Task { @MainActor [weak self] in self?.pairingStatus = "Couldn’t save the secure connection in Keychain." }
                 return false
             }
@@ -372,7 +407,7 @@ final class PeerPairing: ObservableObject {
             return true
         }
         discoveryService.startListening()
-        loadSavedCode()
+        loadSavedPeers()
     }
 
     func discoverNearbyComputers() {
@@ -408,6 +443,14 @@ final class PeerPairing: ObservableObject {
 
     private func finishPairing(peerID: UUID, name: String, key: Data,
                                devices: LogitechHandoff.DeviceChoices?) {
+        peerKeys[peerID] = key
+        if let index = trustedPeers.firstIndex(where: { $0.id == peerID }) {
+            trustedPeers[index] = TrustedPeer(id: peerID, name: name, devices: devices)
+        } else {
+            trustedPeers.append(TrustedPeer(id: peerID, name: name, devices: devices))
+        }
+        trustedPeers.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        persistTrustedPeers()
         defaults.set(peerID.uuidString, forKey: "openSwitchPairedPeerID")
         defaults.set(name, forKey: "openSwitchPairedPeerName")
         pairedPeerID = peerID
@@ -420,69 +463,99 @@ final class PeerPairing: ObservableObject {
         }
         hasCode = true
         accessError = false
-        service.configure(localID: localID, key: key)
-        setupTransport.configure(localID: localID, peerID: pairedPeerID, key: key)
+        configurePeerServices()
         pairingStatus = "Paired with \(name)."
     }
 
-    func loadSavedCode() {
+    private func loadSavedPeers() {
         guard !isLoadingCode else { return }
         isLoadingCode = true
         accessError = false
         keyRevision += 1
         let revision = keyRevision
-        // Keychain can wait for an unlock or prompt; don't block the app or let an older
-        // request overwrite a newer code saved or removed by the user.
+        let peers = trustedPeers
         Task { [weak self] in
-            let result = await Task.detached(priority: .utility) { PeerKeychain.load() }.value
+            var loaded: [UUID: Data] = [:]
+            var hadFailure = false
+            for peer in peers {
+                switch await Task.detached(priority: .utility, operation: { PeerKeychain.load(peerID: peer.id) }).value {
+                case .found(let key): loaded[peer.id] = key
+                case .missing, .unavailable: hadFailure = true
+                }
+            }
             guard let self, self.keyRevision == revision else { return }
             self.isLoadingCode = false
-            switch result {
-            case .found(let secret):
-                self.defaults.set("available", forKey: "openSwitchKeyAccessDiagnostic")
+            self.peerKeys = loaded
+            self.hasCode = !loaded.isEmpty
+            self.accessError = hadFailure && !peers.isEmpty
+            self.defaults.set(hadFailure ? "unavailable" : (loaded.isEmpty ? "missing" : "available"),
+                              forKey: "openSwitchKeyAccessDiagnostic")
+            // Migrate the former single-peer Keychain item without exposing its secret.
+            if loaded.isEmpty, peers.count == 1, let legacy = self.pairedPeerID,
+               case .found(let key) = await Task.detached(priority: .utility, operation: { PeerKeychain.load() }).value,
+               PeerKeychain.save(key, peerID: legacy) {
+                self.peerKeys[legacy] = key
+                _ = PeerKeychain.remove()
                 self.hasCode = true
-                self.service.configure(localID: self.localID, key: secret)
-                self.setupTransport.configure(localID: self.localID, peerID: self.pairedPeerID, key: secret)
-            case .missing:
-                self.defaults.set("missing", forKey: "openSwitchKeyAccessDiagnostic")
-                self.hasCode = false
-                self.service.configure(localID: self.localID, key: nil)
-                self.setupTransport.configure(localID: self.localID, peerID: nil, key: nil)
-            case .unavailable:
-                self.defaults.set("unavailable", forKey: "openSwitchKeyAccessDiagnostic")
-                self.hasCode = false
-                self.accessError = true
-                self.service.configure(localID: self.localID, key: nil)
-                self.setupTransport.configure(localID: self.localID, peerID: nil, key: nil)
+                self.persistTrustedPeers()
             }
+            self.configurePeerServices()
         }
     }
 
+    private func persistTrustedPeers() {
+        if let data = try? JSONEncoder().encode(trustedPeers) {
+            defaults.set(data, forKey: "openSwitchTrustedPeers")
+        }
+    }
+
+    private func configurePeerServices() {
+        service.configure(localID: localID, keys: peerKeys)
+        setupTransport.configure(localID: localID, keys: peerKeys)
+    }
+
+    var trustedPeerIDs: Set<UUID> { Set(peerKeys.keys) }
+
     func save(code: String) -> Bool {
-        guard let data = PeerWire.parseCode(code), PeerKeychain.save(data) else { return false }
+        guard let data = PeerWire.parseCode(code) else { return false }
+        if let pairedPeerID {
+            guard PeerKeychain.save(data, peerID: pairedPeerID) else { return false }
+            peerKeys[pairedPeerID] = data
+        } else if !PeerKeychain.save(data) { return false }
         keyRevision += 1
         isLoadingCode = false
         accessError = false
         hasCode = true
-        service.configure(localID: localID, key: data)
-        setupTransport.configure(localID: localID, peerID: pairedPeerID, key: data)
+        configurePeerServices()
         return true
     }
 
-    func forget() -> Bool {
-        guard PeerKeychain.remove() else { return false }
+    func forget() -> Bool { forget(peerID: pairedPeerID) }
+
+    func forget(peerID: UUID?) -> Bool {
+        if let peerID {
+            guard PeerKeychain.remove(peerID: peerID) else { return false }
+            peerKeys.removeValue(forKey: peerID)
+            trustedPeers.removeAll { $0.id == peerID }
+        } else {
+            guard PeerKeychain.remove() else { return false }
+        }
         keyRevision += 1
         isLoadingCode = false
         accessError = false
-        hasCode = false
-        pairedPeerID = nil
-        pairedPeerName = nil
-        pairedPeerDevices = nil
-        defaults.removeObject(forKey: "openSwitchPairedPeerID")
-        defaults.removeObject(forKey: "openSwitchPairedPeerName")
-        defaults.removeObject(forKey: "openSwitchPairedPeerDevices")
-        service.configure(localID: localID, key: nil)
-        setupTransport.configure(localID: localID, peerID: nil, key: nil)
+        pairedPeerID = trustedPeers.last?.id
+        pairedPeerName = trustedPeers.last?.name
+        pairedPeerDevices = trustedPeers.last?.devices
+        if let pairedPeerID { defaults.set(pairedPeerID.uuidString, forKey: "openSwitchPairedPeerID") }
+        else { defaults.removeObject(forKey: "openSwitchPairedPeerID") }
+        if let pairedPeerName { defaults.set(pairedPeerName, forKey: "openSwitchPairedPeerName") }
+        else { defaults.removeObject(forKey: "openSwitchPairedPeerName") }
+        if let pairedPeerDevices, let data = try? JSONEncoder().encode(pairedPeerDevices) {
+            defaults.set(data, forKey: "openSwitchPairedPeerDevices")
+        } else { defaults.removeObject(forKey: "openSwitchPairedPeerDevices") }
+        persistTrustedPeers()
+        hasCode = !peerKeys.isEmpty
+        configurePeerServices()
         pairingStatus = "Pairing removed."
         return true
     }

@@ -316,9 +316,9 @@ private struct AboutSection: View {
                 ODCard {
                     AppIdentityRow()
                     ODDivider()
+                    UpdateCheckRow()
+                    ODDivider()
                     if SoftwareUpdater.updatesEnabled {
-                        UpdateCheckRow()
-                        ODDivider()
                         ODRow("Check for updates automatically") {
                             Toggle("Check for updates automatically", isOn: Binding(
                                 get: { model.settings.updateCheckEnabled },
@@ -334,7 +334,7 @@ private struct AboutSection: View {
                                 .disabled(!model.settings.updateCheckEnabled)
                         }
                     } else {
-                        ODRow("Updates", secondary: "Not configured for this build") { EmptyView() }
+                        ODRow("Automatic updates", secondary: "Not configured for this development build") { EmptyView() }
                     }
                     ForEach(AboutView.projectLinks) { link in
                         ODDivider()

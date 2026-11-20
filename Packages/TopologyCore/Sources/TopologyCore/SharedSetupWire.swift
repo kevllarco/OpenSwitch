@@ -53,8 +53,9 @@ public enum SharedSetupWire {
         if message.kind == .offer {
             guard let setup = message.setup, setup.id == message.setupID,
                   setup.revision == message.revision,
-                  setup.computers.contains(where: { $0.peerID == message.sender }),
-                  setup.computers.contains(where: { $0.peerID == message.recipient }) else { throw WireError.invalidMessage }
+                  setup.computers.contains(where: { $0.peerID == message.sender }) else { throw WireError.invalidMessage }
+            // A topology update may intentionally omit its recipient when that Mac is being
+            // removed. The authenticated receiver handles that as a local profile removal.
             try setup.validate()
         } else if message.setup != nil { throw WireError.invalidMessage }
     }

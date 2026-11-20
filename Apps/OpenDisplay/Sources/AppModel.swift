@@ -473,11 +473,11 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        peerPairing.setupTransport.setReceiver { [weak self] setup in
-            await self?.receiveSharedSetup(setup) ?? false
+        peerPairing.setupTransport.setReceiver { [weak self] senderID, setup in
+            await self?.receiveSharedSetup(setup, from: senderID) ?? false
         }
-        peerPairing.setupTransport.setRemovalReceiver { [weak self] setupID, revision in
-            await self?.receiveSharedSetupRemoval(setupID: setupID, revision: revision) ?? false
+        peerPairing.setupTransport.setRemovalReceiver { [weak self] senderID, setupID, revision in
+            await self?.receiveSharedSetupRemoval(setupID: setupID, revision: revision, from: senderID) ?? false
         }
         Task { await observeTopologyChanges() }
         // A software gamma dim persists until logout; restore on quit so it never outlives the app.
@@ -2080,11 +2080,14 @@ final class AppModel: ObservableObject {
         if let peerString = entry.availabilityPeerID {
             inputHandoffStatus = "Checking whether \(entry.destinationLabel) is responding…"
             let peerID = UUID(uuidString: peerString)
-            let responding = if let peerID { await peerPairing.service.check(expectedID: peerID) } else { false }
+            let isPaired = if let peerID { peerPairing.trustedPeerIDs.contains(peerID) } else { false }
+            let responding = if let peerID, isPaired { await peerPairing.service.check(expectedID: peerID) } else { false }
             if !responding {
                 let alert = NSAlert()
                 alert.messageText = "Can’t confirm \(entry.destinationLabel) is available"
-                alert.informativeText = "The other computer may be asleep or disconnected, or Local Network access may be blocked. Switching anyway could leave your screen and devices on an unavailable input."
+                alert.informativeText = isPaired
+                    ? "The other computer may be asleep or disconnected, or Local Network access may be blocked. Switching anyway could leave your screen and devices on an unavailable input."
+                    : "This Mac is not paired directly with \(entry.destinationLabel), so OpenSwitch cannot check its availability. Pair the Macs in Computers settings for an automatic check."
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Cancel")
                 alert.addButton(withTitle: "Switch Anyway")
@@ -4386,18 +4389,18 @@ final class AppModel: ObservableObject {
     }
 
     /// A network acknowledgement is sent only after local resolution and persistence succeed.
-    private func receiveSharedSetup(_ setup: SharedComputerSetup) -> Bool {
-        guard let peerID = peerPairing.pairedPeerID else {
-            sharedSetupSaveStatus = "Pair this Mac with the other Mac before saving the shared setup."
+    private func receiveSharedSetup(_ setup: SharedComputerSetup, from peerID: UUID) -> Bool {
+        guard peerID == peerPairing.localID || peerPairing.trustedPeerIDs.contains(peerID) else {
+            sharedSetupSaveStatus = "This Mac is not paired with the computer that sent the setup."
             return false
         }
         guard let settingsStore else {
             sharedSetupSaveStatus = "OpenSwitch could not open its settings folder. Restart the app and try again."
             return false
         }
-        guard setup.computers.count == 2,
-              Set(setup.computers.map(\.peerID)) == Set([peerID, peerPairing.localID]) else {
-            sharedSetupSaveStatus = "This setup does not match the two currently paired Macs. Reconnect the other Mac and try again."
+        guard setup.computers.count >= 2,
+              setup.computers.contains(where: { $0.peerID == peerID }) else {
+            sharedSetupSaveStatus = "The shared setup must include the trusted Mac that sent it."
             return false
         }
         do {
@@ -4405,6 +4408,30 @@ final class AppModel: ObservableObject {
             catch {
                 sharedSetupSaveStatus = "The setup details are incomplete or invalid: \(error.localizedDescription)"
                 return false
+            }
+            if !setup.computers.contains(where: { $0.peerID == peerPairing.localID }) {
+                // A valid topology update that omits this receiver removes just this Mac's
+                // profile while preserving the revised list for later recovery.
+                let directory = try SettingsStore.defaultDirectory()
+                let ledger = directory.appendingPathComponent("shared-setup-applied.json")
+                let applied = (try? Data(contentsOf: ledger)).flatMap { try? JSONDecoder().decode(SharedComputerSetup.self, from: $0) }
+                switch SharedSetupRevisionDecision.decide(incoming: setup, applied: applied) {
+                case .rejectOlder, .rejectDifferentSetup: return false
+                case .alreadyApplied: return true
+                case .apply: break
+                }
+                var registry = settings.hotkeyShortcuts
+                for binding in registry.inputSwitchBindings where binding.id.hasPrefix("\(setup.id.uuidString):") {
+                    registry.removeInputSwitchBinding(id: binding.id)
+                }
+                var updated = settings
+                updated.hotkeyShortcuts = registry
+                try settingsStore.save(updated)
+                settings = updated
+                try JSONEncoder().encode(setup).write(to: ledger, options: .atomic)
+                registerHotkeys()
+                activeInputSwitchBindingID = nil
+                return true
             }
             let displayID: DisplayRecordID
             if let identity = setup.monitorIdentity {
@@ -4457,7 +4484,13 @@ final class AppModel: ObservableObject {
                 return complete
             case .apply: break
             }
-            let registry = try SharedSetupMigration.merging(bindings, into: settings.hotkeyShortcuts)
+            var priorRegistry = settings.hotkeyShortcuts
+            let retainedPeerIDs = Set(setup.computers.map { $0.peerID.uuidString })
+            for binding in priorRegistry.inputSwitchBindings where binding.id.hasPrefix("\(setup.id.uuidString):") {
+                let profileID = String(binding.id.dropFirst(setup.id.uuidString.count + 1))
+                if !retainedPeerIDs.contains(profileID) { priorRegistry.removeInputSwitchBinding(id: binding.id) }
+            }
+            let registry = try SharedSetupMigration.merging(bindings, into: priorRegistry)
             var updated = settings
             updated.hotkeyShortcuts = registry
             try settingsStore.save(updated)
@@ -4476,20 +4509,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Removes the complete shared pair configuration on this Mac. Paired removal is acknowledged
-    /// before local settings are cleared, so an unreachable Mac does not leave an asymmetric setup.
+    /// Removes the complete shared setup after every configured Mac acknowledges the removal.
     func removeSharedComputerSetup() async -> Bool {
-        guard let peerID = peerPairing.pairedPeerID else {
-            sharedSetupSaveStatus = "Reconnect the paired Mac before removing the shared setup."
-            return false
-        }
         do {
             let directory = try SettingsStore.defaultDirectory()
             let ledgerURL = directory.appendingPathComponent("shared-setup-applied.json")
             guard let data = try? Data(contentsOf: ledgerURL),
                   let setup = try? JSONDecoder().decode(SharedComputerSetup.self, from: data),
-                  Set(setup.computers.map(\.peerID)) == Set([peerPairing.localID, peerID]) else {
-                sharedSetupSaveStatus = "There is no matching shared setup to remove. Reopen setup and save the pair again."
+                  setup.computers.contains(where: { $0.peerID == peerPairing.localID }) else {
+                sharedSetupSaveStatus = "There is no matching shared setup to remove."
                 return false
             }
             guard setup.revision < UInt64.max else {
@@ -4497,16 +4525,20 @@ final class AppModel: ObservableObject {
                 return false
             }
             let revision = setup.revision + 1
-            sharedSetupSaveStatus = "Removing the shared setup from both Macs…"
-            guard await peerPairing.setupTransport.sendRemoval(setupID: setup.id, revision: revision) else {
-                sharedSetupSaveStatus = "The other Mac did not confirm removal. It is still set up here; reconnect it and try again."
-                return false
+            sharedSetupSaveStatus = "Removing the shared setup from all Macs…"
+            let remoteIDs = setup.computers.map(\.peerID).filter { $0 != peerPairing.localID }
+            for peerID in remoteIDs {
+                guard peerPairing.trustedPeerIDs.contains(peerID),
+                      await peerPairing.setupTransport.sendRemoval(setupID: setup.id, revision: revision, to: peerID) else {
+                    sharedSetupSaveStatus = "A Mac did not confirm removal. Reconnect it and try again."
+                    return false
+                }
             }
-            guard receiveSharedSetupRemoval(setupID: setup.id, revision: revision) else {
+            guard receiveSharedSetupRemoval(setupID: setup.id, revision: revision, from: remoteIDs.first ?? peerPairing.localID) else {
                 sharedSetupSaveStatus = "The other Mac removed its setup, but this Mac could not clear its settings. Reopen Settings and try again."
                 return false
             }
-            sharedSetupSaveStatus = "Shared setup removed from both Macs. Run setup again to switch between them."
+            sharedSetupSaveStatus = "Shared setup removed from all Macs."
             return true
         } catch {
             sharedSetupSaveStatus = "Could not remove the shared setup: \(error.localizedDescription)"
@@ -4514,10 +4546,44 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func removeSharedComputer(peerID: UUID) async -> Bool {
+        guard peerID != peerPairing.localID else {
+            sharedSetupSaveStatus = "This Mac is the setup’s local computer. Remove the whole setup to start over."
+            return false
+        }
+        do {
+            let ledger = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-applied.json")
+            guard let data = try? Data(contentsOf: ledger),
+                  var setup = try? JSONDecoder().decode(SharedComputerSetup.self, from: data),
+                  setup.computers.contains(where: { $0.peerID == peerID }) else {
+                sharedSetupSaveStatus = "This Mac is not in the current shared setup."
+                return false
+            }
+            if setup.computers.count <= 2 { return await removeSharedComputerSetup() }
+            guard setup.revision < UInt64.max,
+                  peerPairing.trustedPeerIDs.contains(peerID) else {
+                sharedSetupSaveStatus = "Reconnect this Mac before removing it from the shared setup."
+                return false
+            }
+            setup.computers.removeAll { $0.peerID == peerID }
+            setup.revision += 1
+            guard await saveSharedSetup(setup) else { return false }
+            guard await peerPairing.setupTransport.send(setup, to: peerID) else {
+                sharedSetupSaveStatus = "The Mac was removed here, but it did not confirm removal. Reconnect it and retry."
+                return false
+            }
+            sharedSetupSaveStatus = "Computer removed from the shared setup on all Macs."
+            return true
+        } catch {
+            sharedSetupSaveStatus = "Could not remove this computer: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     /// Applies a trusted paired removal. A local tombstone makes a retried removal idempotent and
     /// prevents an old setup offer from being mistaken for the current pair configuration.
-    private func receiveSharedSetupRemoval(setupID: UUID, revision: UInt64) -> Bool {
-        guard revision > 0, peerPairing.pairedPeerID != nil, let settingsStore else { return false }
+    private func receiveSharedSetupRemoval(setupID: UUID, revision: UInt64, from peerID: UUID) -> Bool {
+        guard revision > 0, (peerID == peerPairing.localID || peerPairing.trustedPeerIDs.contains(peerID)), let settingsStore else { return false }
         do {
             let directory = try SettingsStore.defaultDirectory()
             let ledgerURL = directory.appendingPathComponent("shared-setup-applied.json")
@@ -4562,18 +4628,20 @@ final class AppModel: ObservableObject {
 
     func saveSharedSetup(_ setup: SharedComputerSetup) async -> Bool {
         guard !isSavingSharedSetup else { return false }
-        guard let peerID = peerPairing.pairedPeerID else {
-            sharedSetupSaveStatus = "Pair this Mac with the other Mac before saving the shared setup."
+        let remoteIDs = setup.computers.map(\.peerID).filter { $0 != peerPairing.localID }
+        guard !remoteIDs.isEmpty, Set(remoteIDs).isSubset(of: peerPairing.trustedPeerIDs) else {
+            sharedSetupSaveStatus = "Pair this Mac with every computer in the setup before saving."
             return false
         }
         isSavingSharedSetup = true
         defer { isSavingSharedSetup = false }
         do {
-            var delivery = try SharedSetupDelivery(setup: setup, peerID: peerID)
+            let deliveryPeer = remoteIDs[0]
+            var delivery = try SharedSetupDelivery(setup: setup, peerID: deliveryPeer)
             let pending = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-delivery.json")
             if FileManager.default.fileExists(atPath: pending.path) {
                 let previous = try JSONDecoder().decode(SharedSetupDelivery.self, from: Data(contentsOf: pending))
-                if previous.status == .pending && (previous.peerID != peerID || previous.setup != setup) {
+                if previous.status == .pending && (previous.peerID != deliveryPeer || previous.setup != setup) {
                     hasPendingSharedSetup = true
                     sharedSetupSaveStatus = "A previous setup is waiting for confirmation. Retry that save first."
                     return false
@@ -4581,25 +4649,57 @@ final class AppModel: ObservableObject {
             }
             try JSONEncoder().encode(delivery).write(to: pending, options: .atomic)
             hasPendingSharedSetup = true
-            guard receiveSharedSetup(setup) else {
+            guard receiveSharedSetup(setup, from: peerPairing.localID) else {
                 if sharedSetupSaveStatus == nil {
                     sharedSetupSaveStatus = "Setup needs attention on this Mac. Check the monitor and shortcuts."
                 }
                 return false
             }
-            sharedSetupSaveStatus = "Saved on this Mac. Waiting for the other Mac…"
-            guard await peerPairing.setupTransport.send(setup) else {
-                sharedSetupSaveStatus = "Saved on this Mac. The other Mac has not confirmed; retry when it is ready."
-                return false
+            for peerID in remoteIDs {
+                sharedSetupSaveStatus = "Saved on this Mac. Waiting for \(setup.computers.first(where: { $0.peerID == peerID })?.name ?? "a Mac")…"
+                guard await peerPairing.setupTransport.send(setup, to: peerID) else {
+                    sharedSetupSaveStatus = "Some Macs have not confirmed the setup. Reconnect them and retry."
+                    return false
+                }
             }
-            guard peerPairing.pairedPeerID == peerID else { return false }
-            delivery.acknowledge(setupID: setup.id, revision: setup.revision, from: peerID)
+            delivery.acknowledge(setupID: setup.id, revision: setup.revision, from: deliveryPeer)
             try JSONEncoder().encode(delivery).write(to: pending, options: .atomic)
             hasPendingSharedSetup = false
-            sharedSetupSaveStatus = "Setup saved on both Macs."
+            sharedSetupSaveStatus = "Setup saved on all Macs."
             return true
         } catch {
             sharedSetupSaveStatus = "Setup could not be saved: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Adds or updates one destination in the existing shared topology, then distributes the
+    /// complete reviewed topology to every configured Mac.
+    func saveSharedComputer(_ binding: InputSwitchBinding, peerID: UUID) async -> Bool {
+        do {
+            let ledger = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-applied.json")
+            guard let data = try? Data(contentsOf: ledger),
+                  var setup = try? JSONDecoder().decode(SharedComputerSetup.self, from: data),
+                  setup.revision < UInt64.max,
+                  let name = binding.destinationName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                sharedSetupSaveStatus = "Create the first shared setup before adding another Mac."
+                return false
+            }
+            let devices = binding.peripherals
+            let computer = SharedComputerSetup.Computer(peerID: peerID, name: name,
+                inputCode: binding.inputCode, transport: binding.effectiveTransport,
+                keyboard: devices.map { .init(name: $0.keyboardName, slot: $0.keyboardSlot) },
+                mouse: devices.flatMap { $0.mode == .independent ? .init(name: $0.mouseName, slot: $0.mouseSlot) : nil },
+                shortcut: binding.binding)
+            if let index = setup.computers.firstIndex(where: { $0.peerID == peerID }) {
+                setup.computers[index] = computer
+            } else {
+                setup.computers.append(computer)
+            }
+            setup.revision += 1
+            return await saveSharedSetup(setup)
+        } catch {
+            sharedSetupSaveStatus = "Could not prepare the shared computer list: \(error.localizedDescription)"
             return false
         }
     }
@@ -4613,7 +4713,7 @@ final class AppModel: ObservableObject {
             return
         }
         hasPendingSharedSetup = true
-        sharedSetupSaveStatus = delivery.peerID == peerPairing.pairedPeerID
+        sharedSetupSaveStatus = peerPairing.trustedPeerIDs.contains(delivery.peerID)
             ? "A previous setup is waiting for confirmation from the other Mac."
             : "A previous setup is waiting for its paired Mac."
     }
@@ -4622,7 +4722,7 @@ final class AppModel: ObservableObject {
         do {
             let pending = try SettingsStore.defaultDirectory().appendingPathComponent("shared-setup-delivery.json")
             let delivery = try JSONDecoder().decode(SharedSetupDelivery.self, from: Data(contentsOf: pending))
-            guard delivery.peerID == peerPairing.pairedPeerID else { return false }
+            guard peerPairing.trustedPeerIDs.contains(delivery.peerID) else { return false }
             return await saveSharedSetup(delivery.setup)
         } catch { return false }
     }

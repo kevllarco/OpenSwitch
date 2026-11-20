@@ -43,6 +43,7 @@ struct MenuBarView: View {
         .frame(width: model.settings.openSwitchTextSize.menuWidth)
         .appBodyFont()
         .appTextSize(model.settings.openSwitchTextSize)
+        .modifier(MenuSurfaceAppearance())
         .task { await model.refreshActiveKVMState() }
     }
 
@@ -77,6 +78,20 @@ struct MenuBarView: View {
 
     private func showSettings() {
         NotificationCenter.default.post(name: .openDisplayShowSettings, object: nil)
+    }
+}
+
+/// The menu popover is an interactive navigation surface, so it uses Liquid Glass on macOS 26+
+/// and a native material on the app's macOS 14+ fallback range. Settings cards remain standard
+/// content surfaces rather than being turned into glass panels.
+private struct MenuSurfaceAppearance: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.regularMaterial, in: shape)
+        }
     }
 }
 

@@ -7,37 +7,40 @@ import TopologyCore
 final class SharedSetupTransport: @unchecked Sendable {
     static let serviceType = "_openswitch-cfg._tcp"
     private let queue = DispatchQueue(label: "dev.openswitch.setup-transfer")
-    private var listener: NWListener?
+    private var listeners: [UUID: NWListener] = [:]
     private var connections: [UUID: NWConnection] = [:]
-    private var identity: (local: UUID, peer: UUID, key: Data)?
-    private var apply: (@Sendable (SharedComputerSetup) async -> Bool)?
-    private var remove: (@Sendable (UUID, UInt64) async -> Bool)?
+    private var identity: (local: UUID, keys: [UUID: Data])?
+    private var apply: (@Sendable (UUID, SharedComputerSetup) async -> Bool)?
+    private var remove: (@Sendable (UUID, UUID, UInt64) async -> Bool)?
 
-    func setReceiver(_ receiver: @escaping @Sendable (SharedComputerSetup) async -> Bool) {
+    func setReceiver(_ receiver: @escaping @Sendable (UUID, SharedComputerSetup) async -> Bool) {
         queue.async { self.apply = receiver }
     }
 
-    func setRemovalReceiver(_ receiver: @escaping @Sendable (UUID, UInt64) async -> Bool) {
+    func setRemovalReceiver(_ receiver: @escaping @Sendable (UUID, UUID, UInt64) async -> Bool) {
         queue.async { self.remove = receiver }
     }
 
-    func configure(localID: UUID, peerID: UUID?, key: Data?) {
+    func configure(localID: UUID, keys: [UUID: Data]) {
         queue.async { [self] in
-            listener?.cancel(); listener = nil
+            listeners.values.forEach { $0.cancel() }; listeners.removeAll()
             connections.values.forEach { $0.cancel() }; connections.removeAll()
             identity = nil
-            guard let peerID, let key, key.count == 32, localID != peerID else {
+            let trustedKeys = keys.filter { $0.key != localID && $0.value.count == 32 }
+            guard !trustedKeys.isEmpty else {
                 NSLog("OpenSwitch setup listener inactive: paired identity or key unavailable")
                 UserDefaults.standard.set("inactive", forKey: "openSwitchSetupListenerDiagnostic")
                 return
             }
-            identity = (localID, peerID, key)
+            identity = (localID, trustedKeys)
+            for (peerID, key) in trustedKeys {
             guard let server = try? NWListener(using: PeerAvailabilityService.secureParameters(key: key)) else {
-                NSLog("OpenSwitch setup listener could not be created")
-                UserDefaults.standard.set("creation failed", forKey: "openSwitchSetupListenerDiagnostic")
-                return
+                NSLog("OpenSwitch setup listener could not be created for %@", peerID.uuidString)
+                continue
             }
-            server.service = NWListener.Service(name: localID.uuidString, type: Self.serviceType)
+            // The instance name identifies the authorized remote peer and stays within
+            // Bonjour's 63-byte service-name limit.
+            server.service = NWListener.Service(name: peerID.uuidString, type: Self.serviceType)
             server.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -66,7 +69,7 @@ final class SharedSetupTransport: @unchecked Sendable {
                 self.queue.asyncAfter(deadline: .now() + 15) { connection.cancel() }
                 Self.receive(on: connection) { [weak self] data in
                     guard let self, let current = self.identity,
-                          current.local == localID, current.peer == peerID, current.key == key,
+                          current.local == localID, current.keys[peerID] == key,
                           let data, let message = try? SharedSetupWire.decode(data, key: key, sender: peerID, recipient: localID),
                           message.kind == .offer || message.kind == .remove else {
                         connection.cancel(); return
@@ -74,15 +77,15 @@ final class SharedSetupTransport: @unchecked Sendable {
                     Task {
                         let saved: Bool
                         if message.kind == .offer, let setup = message.setup, let apply = self.apply {
-                            saved = await apply(setup)
+                            saved = await apply(peerID, setup)
                         } else if message.kind == .remove, self.remove != nil {
-                            saved = await self.remove?(message.setupID, message.revision) ?? false
+                            saved = await self.remove?(peerID, message.setupID, message.revision) ?? false
                         } else {
                             saved = false
                         }
                         self.queue.async {
-                            guard let current = self.identity, current.key == key,
-                                  current.peer == peerID, current.local == localID else { connection.cancel(); return }
+                            guard let current = self.identity, current.keys[peerID] == key,
+                                  current.local == localID else { connection.cancel(); return }
                             let reply = SharedSetupWire.Message(kind: saved ? .saved : .rejected,
                                 sender: localID, recipient: peerID, requestID: message.requestID,
                                 setupID: message.setupID, revision: message.revision, setup: nil)
@@ -92,40 +95,41 @@ final class SharedSetupTransport: @unchecked Sendable {
                     }
                 }
             }
-            listener = server
+            listeners[peerID] = server
             server.start(queue: queue)
+            }
         }
     }
 
-    func send(_ setup: SharedComputerSetup) async -> Bool {
+    func send(_ setup: SharedComputerSetup, to peerID: UUID) async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
-                guard let identity else { continuation.resume(returning: false); return }
+                guard let identity, let key = identity.keys[peerID] else { continuation.resume(returning: false); return }
                 let message = SharedSetupWire.Message(kind: .offer, sender: identity.local,
-                    recipient: identity.peer, requestID: UUID(), setupID: setup.id,
+                    recipient: peerID, requestID: UUID(), setupID: setup.id,
                     revision: setup.revision, setup: setup)
-                guard let data = try? SharedSetupWire.encode(message, key: identity.key) else {
+                guard let data = try? SharedSetupWire.encode(message, key: key) else {
                     continuation.resume(returning: false); return
                 }
                 let exchange = SharedSetupExchange(queue: queue, message: message, data: data,
-                    key: identity.key, continuation: continuation)
+                    key: key, continuation: continuation)
                 exchange.start()
             }
         }
     }
 
-    func sendRemoval(setupID: UUID, revision: UInt64) async -> Bool {
+    func sendRemoval(setupID: UUID, revision: UInt64, to peerID: UUID) async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
-                guard let identity, revision > 0 else { continuation.resume(returning: false); return }
+                guard let identity, let key = identity.keys[peerID], revision > 0 else { continuation.resume(returning: false); return }
                 let message = SharedSetupWire.Message(kind: .remove, sender: identity.local,
-                    recipient: identity.peer, requestID: UUID(), setupID: setupID,
+                    recipient: peerID, requestID: UUID(), setupID: setupID,
                     revision: revision, setup: nil)
-                guard let data = try? SharedSetupWire.encode(message, key: identity.key) else {
+                guard let data = try? SharedSetupWire.encode(message, key: key) else {
                     continuation.resume(returning: false); return
                 }
                 let exchange = SharedSetupExchange(queue: queue, message: message, data: data,
-                    key: identity.key, continuation: continuation)
+                    key: key, continuation: continuation)
                 exchange.start()
             }
         }
@@ -175,7 +179,7 @@ private final class SharedSetupExchange: @unchecked Sendable {
             guard connection == nil, continuation != nil else { return }
             for result in results {
                 guard case let .service(name, _, _, _) = result.endpoint,
-                      name == message.recipient.uuidString else { continue }
+                      name == message.sender.uuidString else { continue }
                 let channel = NWConnection(to: result.endpoint, using: PeerAvailabilityService.secureParameters(key: key))
                 connection = channel
                 channel.stateUpdateHandler = { [self] state in

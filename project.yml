@@ -40,8 +40,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.11.6"
-    CURRENT_PROJECT_VERSION: "40.9"
+    MARKETING_VERSION: "0.12.0"
+    CURRENT_PROJECT_VERSION: "41.0"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
 
@@ -181,7 +181,7 @@ targets:
         # (bundle id + team), so the grant survives rebuilds. Release re-signs + notarizes on top.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Developer ID Application"
-        DEVELOPMENT_TEAM: 7EKTRESQRZ
+        DEVELOPMENT_TEAM: 26UNZTS87X
     dependencies:
       - target: OpenDisplayDesignSystem
       - target: CoreGraphicsProvider
