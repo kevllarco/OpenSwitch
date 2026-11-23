@@ -196,9 +196,9 @@ EOF
   fi
 
   # generate_appcast reads a DIRECTORY of archives and pairs each with a same-named release-notes
-  # file. Staging a fresh directory keeps the feed to exactly this release: the appcast is published
-  # as an asset of the newest release, and SUFeedURL resolves to that newest asset, so history in the
-  # file would never be read.
+  # file. Staging a fresh directory keeps the feed to exactly this release. The appcast is both
+  # attached to the release and copied to the tracked feed file served from the repository's main
+  # branch.
   STAGE="$DIST/appcast-staging"
   rm -rf "$STAGE"
   mkdir -p "$STAGE"
@@ -226,6 +226,8 @@ EOF
     "$STAGE"
   rm -rf "$STAGE"
   echo "Appcast: $DIST/appcast.xml"
+  cp "$DIST/appcast.xml" appcast.xml
+  echo "Update feed source: appcast.xml (commit this file after the release is published)"
 fi
 
 # --- 6. Publish -----------------------------------------------------------------------------------

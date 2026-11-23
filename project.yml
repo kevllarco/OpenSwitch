@@ -29,7 +29,7 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
-# Sparkle is retained for a future OpenSwitch-owned update feed; SoftwareUpdater currently gates it off.
+# Sparkle provides signed in-app updates from the OpenSwitch-owned appcast.
 # SwiftPM resolves its binary xcframework here, keeping Package.swift's core graph cross-platform.
 # The artifact also contains signing/appcast tools used by scripts/release-signed.sh.
 packages:
@@ -41,7 +41,7 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.12.0"
-    CURRENT_PROJECT_VERSION: "41.0"
+    CURRENT_PROJECT_VERSION: "42.0"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
 

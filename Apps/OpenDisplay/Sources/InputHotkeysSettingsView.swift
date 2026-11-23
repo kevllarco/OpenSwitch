@@ -84,11 +84,7 @@ struct InputHotkeySection: View {
             }
 
             Button {
-                if model.settings.hotkeyShortcuts.inputSwitchBindings.isEmpty {
-                    openEditor(nil)
-                } else {
-                    openDestinationEditor(nil)
-                }
+                openEditor(nil)
             } label: {
                 Label("Add computer\u{2026}", systemImage: "plus")
             }
@@ -143,9 +139,8 @@ struct InputHotkeySection: View {
                 window?.close()
         }
         if let entry {
-            // Editing a configured destination must stay in the single-destination editor.
-            // LiveComputerSetupView is the initial two-Mac wizard and recreates the pair when
-            // entered with an existing shared-setup row.
+            // Adding starts the guided setup. Editing an existing destination stays in the
+            // focused, single-computer editor.
             hosting.rootView = AnyView(AddInputHotkeySheet(entry: entry, pairing: model.peerPairing, onClose: closeEditor)
                 .environmentObject(model))
         } else {
@@ -166,38 +161,6 @@ struct InputHotkeySection: View {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-
-    @MainActor
-    private func openDestinationEditor(_ entry: InputSwitchBinding?) {
-        if let editorWindow, editorWindow.isVisible {
-            editorWindow.makeKeyAndOrderFront(nil)
-            return
-        }
-        let hosting = NSHostingController(rootView: AnyView(EmptyView()))
-        let window = NSWindow(contentViewController: hosting)
-        window.title = entry == nil ? "Add Computer" : "Edit Computer"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 620, height: 440)
-        window.setContentSize(NSSize(width: 760, height: 560))
-        let settingsWindow = NSApp.windows.first { $0.identifier?.rawValue == "OpenSwitch.Settings" }
-        let closeEditor = { [weak window, weak settingsWindow] in
-            if let window, let settingsWindow { settingsWindow.removeChildWindow(window) }
-            window?.close()
-        }
-        hosting.rootView = AnyView(AddInputHotkeySheet(entry: entry, pairing: model.peerPairing, onClose: closeEditor)
-            .environmentObject(model))
-        editorWindow = window
-        if let settingsWindow {
-            settingsWindow.addChildWindow(window, ordered: .above)
-            let frame = settingsWindow.frame
-            window.setFrameOrigin(NSPoint(x: frame.midX - window.frame.width / 2,
-                                          y: frame.midY - window.frame.height / 2))
-        } else { window.center() }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
 }
 
 /// One configured binding: display name, input name, and its chord, with a remove button.

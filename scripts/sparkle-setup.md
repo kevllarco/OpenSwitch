@@ -9,20 +9,21 @@ lives outside the repository and can't be regenerated from it.
 
 | Piece | Where | Value |
 |---|---|---|
-| Feed | `Apps/OpenDisplay/Resources/Info.plist` → `SUFeedURL` | `https://github.com/aquitaine/OpenDisplay/releases/latest/download/appcast.xml` |
-| Public key | `Apps/OpenDisplay/Resources/Info.plist` → `SUPublicEDKey` | `G9aQchK8B0eqrXhKwKWat4SRCR/XboPdgpmfuHrBnuE=` |
+| Feed | `Apps/OpenDisplay/Resources/Info.plist` → `SUFeedURL` | `https://raw.githubusercontent.com/kevllarco/OpenSwitch/main/appcast.xml` |
+| Public key | `Apps/OpenDisplay/Resources/Info.plist` → `SUPublicEDKey` | `GOnMLLE932dHyUBXxIG2qdyRS0wfzcHn0tzV3HatjSs=` |
 | Private key | maintainer's **login keychain** (account `ed25519`) | never on disk, never in the repo |
 | Framework | `project.yml` → `packages.Sparkle` | resolved by SwiftPM, embedded in the app |
 | Appcast | produced by `scripts/release-signed.sh`, uploaded beside `OpenDisplay.zip` | one item, signed |
 
-The feed URL uses GitHub's `releases/latest/download/<asset>` redirect, so it always resolves to the
-newest release's `appcast.xml` and never has to be re-pointed at a new tag.
+The appcast is committed to the OpenSwitch repository so prerelease builds can receive later updates
+without changing their feed URL. Every release must update this file and attach the matching appcast
+asset to the release.
 
 ## Generating the key (only on a new machine, or to rotate)
 
-The key already exists in the maintainer's login keychain — **running `generate_keys` again will not
-overwrite it**, it prints the existing public key instead. You only need this section to set up a
-second machine or to deliberately rotate.
+The key exists in the release Mac's login keychain. Running `generate_keys` again will print the
+existing public key instead of replacing it. You only need this section to set up a second release
+machine or deliberately rotate the key.
 
 ```sh
 # The tools travel inside the resolved Sparkle package, so they always match the embedded framework.
@@ -70,13 +71,11 @@ as the release tag (override with `RELEASE_TAG=`), and lifts that version's sect
 
 ## Things that will bite you
 
-* **Every release needs its appcast.** `SUFeedURL` resolves to the *newest* release's `appcast.xml`.
-  A release published without one makes `releases/latest/download/appcast.xml` 404 — apps in the
-  field then find nothing until the next release fixes it. `release-signed.sh` prints the upload
-  command for exactly this reason; `PUBLISH=1` uploads both together.
+* **Every release needs its appcast.** `SUFeedURL` points at `main/appcast.xml`. Publish the matching
+  release asset and commit the generated appcast so installed copies can find the update.
 * **The first Sparkle-enabled release still has to be installed by hand.** Sparkle only updates *from*
-  a build that already contains it. Every copy older than that (≤ 0.9.0) has no updater, so those
-  users download the release themselves once; from then on the in-app update works.
+  a build that already contains it. Copies built before 0.12.0 have no update feed, so install this
+  release once; later releases can arrive through the in-app updater.
 * **Appcast generation must come after stapling.** The signature and length cover the exact bytes
   users download, and `xcrun stapler` rewrites the zip. The script already orders it that way.
 * **Losing the private key means users can't update.** An app in the field only installs what its

@@ -334,7 +334,7 @@ private struct AboutSection: View {
                                 .disabled(!model.settings.updateCheckEnabled)
                         }
                     } else {
-                        ODRow("Automatic updates", secondary: "Not configured for this development build") { EmptyView() }
+                        ODRow("Automatic updates", secondary: "Not configured for this build") { EmptyView() }
                     }
                     ForEach(AboutView.projectLinks) { link in
                         ODDivider()
@@ -351,7 +351,7 @@ private struct AboutSection: View {
 /// App icon, name, and running version/build — the same bundle-info source `AboutView` reads.
 private struct AppIdentityRow: View {
     var body: some View {
-        ODRow("OpenSwitch", secondary: "Development build \(AboutView.build)") {
+        ODRow("OpenSwitch", secondary: "Version \(AboutView.version) (build \(AboutView.build))") {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable().frame(width: 28, height: 28)
                 .accessibilityHidden(true)

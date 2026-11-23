@@ -9,6 +9,9 @@
 #define OPENSWITCH_BUNDLE_ID "dev.opendisplay.app"
 #endif
 #define PEER_SERVICE OPENSWITCH_BUNDLE_ID ".peer-key"
+// Older local test builds used this service name. Reading it during migration preserves existing
+// trusted Mac connections after the app adopts its stable bundle identifier.
+#define LEGACY_PEER_SERVICE "dev.kevllar.deskswitch.preview.peer-key"
 
 static CFDataRef signing_certificate(SecCodeRef code) {
     CFDictionaryRef info = NULL;
@@ -61,15 +64,23 @@ int main(int argc, char **argv) {
         if (account) CFRelease(account);
         return 77;
     }
-    const void *keys[] = {kSecClass, kSecAttrService, kSecAttrAccount, kSecReturnData, kSecMatchLimit};
-    const void *values[] = {kSecClassGenericPassword, CFSTR(PEER_SERVICE),
-        account, kCFBooleanTrue, kSecMatchLimitOne};
-    CFDictionaryRef query = CFDictionaryCreate(NULL, keys, values, 5,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFRelease(account);
     CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching(query, &result);
-    CFRelease(query);
+    OSStatus status = errSecItemNotFound;
+    const char *services[] = { PEER_SERVICE, LEGACY_PEER_SERVICE };
+    for (size_t i = 0; i < sizeof(services) / sizeof(services[0]); i++) {
+        CFStringRef service = CFStringCreateWithCString(NULL, services[i], kCFStringEncodingUTF8);
+        if (!service) continue;
+        const void *keys[] = {kSecClass, kSecAttrService, kSecAttrAccount, kSecReturnData, kSecMatchLimit};
+        const void *values[] = {kSecClassGenericPassword, service, account, kCFBooleanTrue, kSecMatchLimitOne};
+        CFDictionaryRef query = CFDictionaryCreate(NULL, keys, values, 5,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFRelease(service);
+        if (!query) continue;
+        status = SecItemCopyMatching(query, &result);
+        CFRelease(query);
+        if (status != errSecItemNotFound) break;
+    }
+    CFRelease(account);
     if (status != errSecSuccess || !result || CFGetTypeID(result) != CFDataGetTypeID() ||
         CFDataGetLength((CFDataRef)result) != 32) {
         if (result) CFRelease(result);

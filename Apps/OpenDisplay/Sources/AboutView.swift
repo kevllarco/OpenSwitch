@@ -52,14 +52,14 @@ struct AboutView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Development build \(Self.build)")
+            Text("Version \(Self.version) (build \(Self.build))")
                 .font(.body.monospacedDigit())
                 .textSelection(.enabled)
-                .accessibilityLabel("Development build \(Self.build)")
+                .accessibilityLabel("Version \(Self.version), build \(Self.build)")
                 .padding(.top, 2)
             UpdateCheckStatusView()
             if !SoftwareUpdater.updatesEnabled {
-                Text("Automatic in-app updates are not configured for this development build.")
+                Text("Automatic in-app updates are not configured for this build.")
                     .appBodyFont().foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

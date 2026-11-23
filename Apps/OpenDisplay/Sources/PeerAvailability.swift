@@ -359,6 +359,9 @@ final class PeerPairing: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        if defaults === UserDefaults.standard {
+            Self.migrateLegacyDefaults(into: defaults)
+        }
         let key = "deskSwitchAvailabilityPeerID"
         if let saved = defaults.string(forKey: key), let uuid = UUID(uuidString: saved) {
             localID = uuid
@@ -408,6 +411,22 @@ final class PeerPairing: ObservableObject {
         }
         discoveryService.startListening()
         loadSavedPeers()
+    }
+
+    /// The first OpenSwitch test app used a temporary bundle identifier. Keep its local peer ID,
+    /// trusted peer list, and update preferences when moving to the stable release identifier.
+    private static func migrateLegacyDefaults(into defaults: UserDefaults) {
+        let legacyBundleID = "dev.kevllar.deskswitch.preview"
+        let destinationBundleID = Bundle.main.bundleIdentifier ?? ""
+        guard !destinationBundleID.isEmpty, destinationBundleID != legacyBundleID,
+              let oldDomain = defaults.persistentDomain(forName: legacyBundleID), !oldDomain.isEmpty else { return }
+        var newDomain = defaults.persistentDomain(forName: destinationBundleID) ?? [:]
+        guard newDomain["openSwitchMigratedFromPreviewBundle"] == nil else { return }
+        for (key, value) in oldDomain where newDomain[key] == nil {
+            newDomain[key] = value
+        }
+        newDomain["openSwitchMigratedFromPreviewBundle"] = true
+        defaults.setPersistentDomain(newDomain, forName: destinationBundleID)
     }
 
     func discoverNearbyComputers() {

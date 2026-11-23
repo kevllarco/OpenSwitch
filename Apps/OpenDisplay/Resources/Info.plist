@@ -31,12 +31,16 @@
 	</array>
 	<key>LSUIElement</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/kevllarco/OpenSwitch/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>GOnMLLE932dHyUBXxIG2qdyRS0wfzcHn0tzV3HatjSs=</string>
 	<!-- Clock Mode (Issue 30): optional one-shot location lookup to auto-fill the sunrise/sunset
 	     latitude & longitude. Only requested when the user taps "Use current location"; a manual
 	     entry is always available instead. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>OpenSwitch uses your location once to calculate local sunrise, noon, and sunset times for Clock Mode brightness schedules. You can also enter your coordinates manually.</string>
-	<!-- No update feed is configured for OpenSwitch development builds. -->
+	<!-- OpenSwitch update feed and EdDSA verification key. -->
 	<!-- opendisplay:// URL-scheme automation (Issue 4). Routes onto the same safety-checked,
 	     audited CommandGateway as the CLI and App Intents; only non-destructive recovery
 	     commands auto-run, arrangement-altering ones require in-app confirmation. -->
