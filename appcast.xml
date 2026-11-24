@@ -4,6 +4,54 @@
         <title>OpenSwitch</title>
         <item>
             <title>0.12.0</title>
+            <pubDate>Mon, 23 Nov 2026 21:51:37 -0500</pubDate>
+            <link>https://github.com/kevllarco/OpenSwitch</link>
+            <sparkle:version>44.0</sparkle:version>
+            <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[
+### Fixed
+- **Migration now carries over the active preview app’s existing settings and computer setup even
+  when the stable app already has an older data folder.** Existing stable data is backed up first.
+- **Setup instructions now appear in the setup wizard**, rather than taking space in Computers settings.
+- **A failed setup save explains that the other Mac may need OpenSwitch opened or updated.**
+
+### Release candidate
+- This is an in-app update for RC2 and RC3. Macs still running the older preview app need a one-time manual install.
+
+
+### Fixed
+- **Existing preview app files missing from the stable app folder are copied forward.**
+- **Setup instructions now appear in the setup wizard**, rather than taking space in Computers settings.
+- **A failed setup save explains that the other Mac may need OpenSwitch opened or updated.**
+
+### Release candidate
+- This is an in-app update for RC2. Macs still running a preview-bundle build need one manual install.
+
+
+### Added
+- **Support for three or more Macs in one shared setup.** Pair each Mac directly, then configure
+  monitor input, keyboard and mouse destinations across the group. Shared setup changes and
+  computer removals are synchronized to trusted Macs.
+- **Guided computer setup now adapts to an existing setup.** Add one Mac at a time, keep current
+  computer settings intact, and review the full computer list before saving. Input and Logitech
+  Easy-Switch assignments already in use are protected.
+- **Existing test installations keep their Mac identity and pairing data** when moving to the
+  stable app identifier.
+- **Edit an existing computer setup without restarting the add flow.**
+- **Pairing guidance for unpaired destinations** and availability warnings that explain when a Mac
+  cannot be checked directly.
+- **OpenSwitch menu surface refinements** and clearer About/update messaging for development builds.
+
+### Release candidate
+- This prerelease adds the OpenSwitch-owned Sparkle update feed. Install this build once manually;
+  builds before it do not have an update feed configured.
+
+]]></description>
+            <enclosure url="https://github.com/kevllarco/OpenSwitch/releases/download/v0.12.0-rc.4/OpenSwitch.zip" length="8344418" type="application/octet-stream" sparkle:edSignature="zM7gvVkEmE8bItiAmdWcvQwCqq7YApeTbNunB76TqweGzPBUg+2cPSDzTM/y40FLNvQKaQZEdY1ipWYu3Pu2Dw=="/>
+        </item>
+        <item>
+            <title>0.12.0</title>
             <pubDate>Mon, 23 Nov 2026 21:43:44 -0500</pubDate>
             <link>https://github.com/kevllarco/OpenSwitch</link>
             <sparkle:version>43.0</sparkle:version>
