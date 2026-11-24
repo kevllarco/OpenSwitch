@@ -5,11 +5,21 @@ All notable changes to OpenDisplay are documented here. The format is based on
 [Semantic Versioning](https://semver.org/). OpenDisplay is pre-1.0 (0.x); anything may
 change until 1.0.
 
+## [0.12.0] — Release Candidate 4 (2026-11-23)
+
+### Fixed
+- **Migration now carries over the active preview app’s existing settings and computer setup even
+  when the stable app already has an older data folder.** Existing stable data is backed up first.
+- **Setup instructions now appear in the setup wizard**, rather than taking space in Computers settings.
+- **A failed setup save explains that the other Mac may need OpenSwitch opened or updated.**
+
+### Release candidate
+- This is an in-app update for RC2 and RC3. Macs still running the older preview app need a one-time manual install.
+
 ## [0.12.0] — Release Candidate 3 (2026-11-23)
 
 ### Fixed
-- **Existing setups survive the move from the preview app to OpenSwitch.** Settings, monitor data,
-  and the acknowledged shared-computer setup are copied forward without replacing newer files.
+- **Existing preview app files missing from the stable app folder are copied forward.**
 - **Setup instructions now appear in the setup wizard**, rather than taking space in Computers settings.
 - **A failed setup save explains that the other Mac may need OpenSwitch opened or updated.**
 

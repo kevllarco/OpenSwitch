@@ -484,17 +484,24 @@ public struct SettingsStore: Sendable {
 
     /// The first OpenSwitch builds stored settings and shared computer setup under the preview
     /// product name. Copy missing files into the stable app directory so existing setups survive
-    /// the bundle and product rename. Existing stable files always win; the old directory remains
-    /// intact as a recovery copy.
+    /// the bundle and product rename. Preview files take precedence because they belonged to the
+    /// app that was in use immediately before migration. Any existing stable directory is backed
+    /// up first, and the original preview directory remains intact as a second recovery copy.
     private static func migrateLegacySupport(from legacy: URL, to destination: URL, fileManager: FileManager) throws {
         let marker = destination.appendingPathComponent(".migrated-from-desk-switch-preview")
         guard !fileManager.fileExists(atPath: marker.path),
               fileManager.fileExists(atPath: legacy.path) else { return }
-        try mergeMissingContents(from: legacy, to: destination, fileManager: fileManager)
+        if fileManager.fileExists(atPath: destination.path),
+           !(try fileManager.contentsOfDirectory(atPath: destination.path)).isEmpty {
+            let backup = destination.deletingLastPathComponent().appendingPathComponent(
+                "\(destination.lastPathComponent)-pre-preview-migration-\(UUID().uuidString)", isDirectory: true)
+            try fileManager.copyItem(at: destination, to: backup)
+        }
+        try mergePreviewContents(from: legacy, to: destination, fileManager: fileManager)
         try Data("OpenSwitch support data migration complete".utf8).write(to: marker, options: .atomic)
     }
 
-    private static func mergeMissingContents(from source: URL, to destination: URL, fileManager: FileManager) throws {
+    private static func mergePreviewContents(from source: URL, to destination: URL, fileManager: FileManager) throws {
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
         for item in try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isDirectoryKey]) {
             let target = destination.appendingPathComponent(item.lastPathComponent, isDirectory: false)
@@ -504,12 +511,18 @@ public struct SettingsStore: Sendable {
                 var targetIsDirectory: ObjCBool = false
                 if fileManager.fileExists(atPath: target.path, isDirectory: &targetIsDirectory) {
                     if targetIsDirectory.boolValue {
-                        try mergeMissingContents(from: item, to: target, fileManager: fileManager)
+                        try mergePreviewContents(from: item, to: target, fileManager: fileManager)
+                    } else {
+                        try fileManager.removeItem(at: target)
+                        try fileManager.copyItem(at: item, to: target)
                     }
                 } else {
                     try fileManager.copyItem(at: item, to: target)
                 }
-            } else if !fileManager.fileExists(atPath: target.path) {
+            } else {
+                if fileManager.fileExists(atPath: target.path) {
+                    try fileManager.removeItem(at: target)
+                }
                 try fileManager.copyItem(at: item, to: target)
             }
         }
