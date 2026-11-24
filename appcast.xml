@@ -1,0 +1,35 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>OpenSwitch</title>
+        <item>
+            <title>0.12.0</title>
+            <pubDate>Mon, 23 Nov 2026 16:27:01 -0500</pubDate>
+            <link>https://github.com/kevllarco/OpenSwitch</link>
+            <sparkle:version>42.0</sparkle:version>
+            <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[
+### Added
+- **Support for three or more Macs in one shared setup.** Pair each Mac directly, then configure
+  monitor input, keyboard and mouse destinations across the group. Shared setup changes and
+  computer removals are synchronized to trusted Macs.
+- **Guided computer setup now adapts to an existing setup.** Add one Mac at a time, keep current
+  computer settings intact, and review the full computer list before saving. Input and Logitech
+  Easy-Switch assignments already in use are protected.
+- **Existing test installations keep their Mac identity and pairing data** when moving to the
+  stable app identifier.
+- **Edit an existing computer setup without restarting the add flow.**
+- **Pairing guidance for unpaired destinations** and availability warnings that explain when a Mac
+  cannot be checked directly.
+- **OpenSwitch menu surface refinements** and clearer About/update messaging for development builds.
+
+### Release candidate
+- This prerelease adds the OpenSwitch-owned Sparkle update feed. Install this build once manually;
+  builds before it do not have an update feed configured.
+
+]]></description>
+            <enclosure url="https://github.com/kevllarco/OpenSwitch/releases/download/v0.12.0-rc.2/OpenSwitch.zip" length="8346849" type="application/octet-stream" sparkle:edSignature="oxKmFsm1GTmdgPB/ibB1te33otATbyXoiB7FtplLUYoj5Ql2klclI7yXpEi0rSfNrGeHMNue6SqaFbTEyyifBA=="/>
+        </item>
+    </channel>
+</rss>
