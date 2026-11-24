@@ -37,16 +37,8 @@ struct InputHotkeySection: View {
     @EnvironmentObject private var model: AppModel
     @State private var editorWindow: NSWindow?
 
-    private var externalDisplays: [DisplayObservation] {
-        model.displays.filter { $0.displayClass != .builtIn }
-    }
-
     private var localComputerName: String {
         Host.current().localizedName ?? ProcessInfo.processInfo.hostName
-    }
-
-    private var hasOtherComputerSetup: Bool {
-        model.settings.hotkeyShortcuts.inputSwitchBindings.contains { $0.availabilityPeerID != nil || $0.id.contains(":") }
     }
 
     private var missingComputerPairings: Int {
@@ -60,9 +52,6 @@ struct InputHotkeySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: ODSpacing.sm) {
-            if !hasOtherComputerSetup {
-                setupIntroduction
-            }
             ForEach(Array(model.settings.hotkeyShortcuts.inputSwitchBindings.enumerated()), id: \.element.id) { index, entry in
                 if index > 0 { ODDivider(inset: 0) }
                 InputHotkeyRow(entry: entry) { openEditor(entry) }
@@ -89,32 +78,6 @@ struct InputHotkeySection: View {
                 Label("Add computer\u{2026}", systemImage: "plus")
             }
         }
-    }
-
-    private var setupIntroduction: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Set up your Macs")
-                .font(.title2.weight(.semibold))
-            Text("This Mac: \(localComputerName)")
-                .appBodyFont()
-            VStack(alignment: .leading, spacing: 8) {
-                Text("1. Open OpenSwitch on your other Mac.")
-                Text("2. Choose Add computer here. This adds both Macs to this Mac’s switch menu.")
-                Text("3. Accept the pairing request on the other Mac.")
-            }
-            .appBodyFont()
-            .fixedSize(horizontal: false, vertical: true)
-            if externalDisplays.isEmpty {
-                Label("Connect the external monitor to this Mac before continuing.", systemImage: "display.trianglebadge.exclamationmark")
-                    .appBodyFont()
-                    .foregroundStyle(ODColor.caution)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(ODColor.cardBackground, in: RoundedRectangle(cornerRadius: ODRadius.card))
-        .overlay(RoundedRectangle(cornerRadius: ODRadius.card).strokeBorder(ODColor.separator, lineWidth: 0.5))
     }
 
     @MainActor

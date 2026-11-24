@@ -474,7 +474,45 @@ public struct SettingsStore: Sendable {
         let base = try fileManager.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         )
-        return base.appendingPathComponent(appName, isDirectory: true)
+        let directory = base.appendingPathComponent(appName, isDirectory: true)
+        if appName == "OpenDisplay" {
+            let legacy = base.appendingPathComponent("Desk Switch Preview", isDirectory: true)
+            try migrateLegacySupport(from: legacy, to: directory, fileManager: fileManager)
+        }
+        return directory
+    }
+
+    /// The first OpenSwitch builds stored settings and shared computer setup under the preview
+    /// product name. Copy missing files into the stable app directory so existing setups survive
+    /// the bundle and product rename. Existing stable files always win; the old directory remains
+    /// intact as a recovery copy.
+    private static func migrateLegacySupport(from legacy: URL, to destination: URL, fileManager: FileManager) throws {
+        let marker = destination.appendingPathComponent(".migrated-from-desk-switch-preview")
+        guard !fileManager.fileExists(atPath: marker.path),
+              fileManager.fileExists(atPath: legacy.path) else { return }
+        try mergeMissingContents(from: legacy, to: destination, fileManager: fileManager)
+        try Data("OpenSwitch support data migration complete".utf8).write(to: marker, options: .atomic)
+    }
+
+    private static func mergeMissingContents(from source: URL, to destination: URL, fileManager: FileManager) throws {
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for item in try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isDirectoryKey]) {
+            let target = destination.appendingPathComponent(item.lastPathComponent, isDirectory: false)
+            var sourceIsDirectory: ObjCBool = false
+            _ = fileManager.fileExists(atPath: item.path, isDirectory: &sourceIsDirectory)
+            if sourceIsDirectory.boolValue {
+                var targetIsDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: target.path, isDirectory: &targetIsDirectory) {
+                    if targetIsDirectory.boolValue {
+                        try mergeMissingContents(from: item, to: target, fileManager: fileManager)
+                    }
+                } else {
+                    try fileManager.copyItem(at: item, to: target)
+                }
+            } else if !fileManager.fileExists(atPath: target.path) {
+                try fileManager.copyItem(at: item, to: target)
+            }
+        }
     }
 
     /// Returns persisted settings, or `.default` when the file is absent or unreadable — so first

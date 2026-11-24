@@ -4658,7 +4658,8 @@ final class AppModel: ObservableObject {
             for peerID in remoteIDs {
                 sharedSetupSaveStatus = "Saved on this Mac. Waiting for \(setup.computers.first(where: { $0.peerID == peerID })?.name ?? "a Mac")…"
                 guard await peerPairing.setupTransport.send(setup, to: peerID) else {
-                    sharedSetupSaveStatus = "Some Macs have not confirmed the setup. Reconnect them and retry."
+                    let peerName = setup.computers.first(where: { $0.peerID == peerID })?.name ?? "The other Mac"
+                    sharedSetupSaveStatus = "\(peerName) didn’t confirm the setup. Open and update OpenSwitch on that Mac, then retry saving."
                     return false
                 }
             }
@@ -4714,8 +4715,8 @@ final class AppModel: ObservableObject {
         }
         hasPendingSharedSetup = true
         sharedSetupSaveStatus = peerPairing.trustedPeerIDs.contains(delivery.peerID)
-            ? "A previous setup is waiting for confirmation from the other Mac."
-            : "A previous setup is waiting for its paired Mac."
+            ? "The other Mac has not confirmed this setup. Open and update OpenSwitch there, then retry saving."
+            : "This setup is waiting for its paired Mac. Reconnect it, then retry saving."
     }
 
     func retrySharedSetup() async -> Bool {

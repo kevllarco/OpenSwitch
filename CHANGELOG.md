@@ -5,6 +5,17 @@ All notable changes to OpenDisplay are documented here. The format is based on
 [Semantic Versioning](https://semver.org/). OpenDisplay is pre-1.0 (0.x); anything may
 change until 1.0.
 
+## [0.12.0] — Release Candidate 3 (2026-11-23)
+
+### Fixed
+- **Existing setups survive the move from the preview app to OpenSwitch.** Settings, monitor data,
+  and the acknowledged shared-computer setup are copied forward without replacing newer files.
+- **Setup instructions now appear in the setup wizard**, rather than taking space in Computers settings.
+- **A failed setup save explains that the other Mac may need OpenSwitch opened or updated.**
+
+### Release candidate
+- This is an in-app update for RC2. Macs still running a preview-bundle build need one manual install.
+
 ## [0.12.0] — Release Candidate 2 (2026-11-23)
 
 ### Added
